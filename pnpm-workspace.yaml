@@ -1,0 +1,10 @@
+pmOnFail: ignore
+
+minimumReleaseAgeExclude:
+  - '@next/*'
+  - next
+
+allowBuilds:
+  '@parcel/watcher': true
+  '@swc/core': true
+  sharp: true
