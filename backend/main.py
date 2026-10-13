@@ -1460,6 +1460,7 @@ def summary(p: SummaryIn):
     priority = ai_determine_priority(p.form.get('vitals', {}), p.symptoms, conversation_text)
 
     # Generate patient-friendly summary in patient's language (Phase 3)
+    # Send summary as object, not JSON string
     patient_summary_english = json.dumps(summary_data, indent=2)
     patient_summary_translated = translate_medical_summary(patient_summary_english, p.language)
 

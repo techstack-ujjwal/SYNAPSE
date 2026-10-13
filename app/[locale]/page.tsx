@@ -1171,75 +1171,111 @@ function Summary({
             </span>
           </div>
 
-          {data?.summary ? (
-            typeof data.summary === 'string' ? (
-              <p className="mt-4 font-semibold leading-relaxed whitespace-pre-wrap">{data.summary}</p>
-            ) : (
+          {data?.summary ? (() => {
+            const summaryData = typeof data.summary === 'string' ? JSON.parse(data.summary) : data.summary
+            return (
               <div className="mt-4 space-y-4">
-                {data.summary.chief_complaint && (
+                {summaryData.chief_complaint && (
                   <div className="border-l-4 border-[#e44f2b] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#8f8b83]">{tSum('chiefComplaint')}</p>
-                    <p className="mt-1 font-bold text-base text-[#141414]">{data.summary.chief_complaint}</p>
+                    <p className="mt-1 font-bold text-base text-[#141414]">{summaryData.chief_complaint}</p>
                   </div>
                 )}
 
-                {data.summary.timeline && (
+                {summaryData.timeline && (
                   <div className="border-l-4 border-[#236b52] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#8f8b83]">{tSum('timeline')}</p>
-                    <p className="mt-1 font-semibold">{data.summary.timeline}</p>
+                    <p className="mt-1 font-semibold">{summaryData.timeline}</p>
                   </div>
                 )}
 
-                {data.summary.report_findings && (
+                {summaryData.relevant_vitals && (
+                  <div className="border-l-4 border-[#f5cf4a] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
+                    <p className="text-xs font-black uppercase text-[#8f8b83]">Relevant Vitals</p>
+                    {typeof summaryData.relevant_vitals === 'string' ? (
+                      <p className="mt-2 text-sm font-semibold">{summaryData.relevant_vitals}</p>
+                    ) : (
+                      <div className="mt-2 grid gap-1 text-sm font-semibold">
+                        {summaryData.relevant_vitals.blood_pressure && (
+                          <div><span className="text-[#8f8b83]">Blood Pressure:</span> {summaryData.relevant_vitals.blood_pressure}</div>
+                        )}
+                        {summaryData.relevant_vitals.blood_sugar && (
+                          <div><span className="text-[#8f8b83]">Blood Sugar:</span> {summaryData.relevant_vitals.blood_sugar}</div>
+                        )}
+                        {summaryData.relevant_vitals.weight && (
+                          <div><span className="text-[#8f8b83]">Weight:</span> {summaryData.relevant_vitals.weight}</div>
+                        )}
+                        {summaryData.relevant_vitals.height && (
+                          <div><span className="text-[#8f8b83]">Height:</span> {summaryData.relevant_vitals.height}</div>
+                        )}
+                        {summaryData.relevant_vitals.temperature && (
+                          <div><span className="text-[#8f8b83]">Temperature:</span> {summaryData.relevant_vitals.temperature}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {summaryData.report_findings && typeof summaryData.report_findings !== 'string' && !summaryData.report_findings.toString().includes('report attached') && (
                   <div className="border-l-4 border-[#f5cf4a] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#8f8b83]">{tSum('reportFindings')}</p>
-                    <div className="mt-2 grid gap-1 text-sm font-semibold">
-                      {data.summary.report_findings.pain_nature && (
-                        <div><span className="text-[#8f8b83]">{tSum('painNature')}:</span> {data.summary.report_findings.pain_nature}</div>
-                      )}
-                      {data.summary.report_findings.pain_triggers && (
-                        <div><span className="text-[#8f8b83]">{tSum('painTriggers')}:</span> {data.summary.report_findings.pain_triggers}</div>
-                      )}
-                      {data.summary.report_findings.associated_symptoms && (
-                        <div><span className="text-[#8f8b83]">{tSum('associatedSymptoms')}:</span> {data.summary.report_findings.associated_symptoms}</div>
-                      )}
-                    </div>
+                    {typeof summaryData.report_findings === 'object' ? (
+                      <div className="mt-2 grid gap-1 text-sm font-semibold">
+                        {summaryData.report_findings.pain_nature && (
+                          <div><span className="text-[#8f8b83]">{tSum('painNature')}:</span> {summaryData.report_findings.pain_nature}</div>
+                        )}
+                        {summaryData.report_findings.pain_triggers && (
+                          <div><span className="text-[#8f8b83]">{tSum('painTriggers')}:</span> {summaryData.report_findings.pain_triggers}</div>
+                        )}
+                        {summaryData.report_findings.associated_symptoms && (
+                          <div><span className="text-[#8f8b83]">{tSum('associatedSymptoms')}:</span> {summaryData.report_findings.associated_symptoms}</div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 )}
 
-                {data.summary.red_flags && Array.isArray(data.summary.red_flags) && data.summary.red_flags.length > 0 && (
+                {summaryData.red_flags && !summaryData.red_flags.toString().includes('None') && (
                   <div className="border-l-4 border-[#e44f2b] pl-3 bg-[#fff3ef] p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#e44f2b] flex items-center gap-1">
                       <AlertCircle className="size-4" /> {tSum('redFlags')}
                     </p>
-                    <ul className="mt-2 list-disc list-inside space-y-1">
-                      {data.summary.red_flags.map((flag: string, idx: number) => (
-                        <li key={idx} className="text-sm font-bold text-[#e44f2b]">{flag}</li>
-                      ))}
-                    </ul>
+                    {typeof summaryData.red_flags === 'string' ? (
+                      <p className="mt-2 text-sm font-bold text-[#e44f2b]">{summaryData.red_flags}</p>
+                    ) : Array.isArray(summaryData.red_flags) && summaryData.red_flags.length > 0 ? (
+                      <ul className="mt-2 list-disc list-inside space-y-1">
+                        {summaryData.red_flags.map((flag: string, idx: number) => (
+                          <li key={idx} className="text-sm font-bold text-[#e44f2b]">{flag}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                 )}
 
-                {data.summary.missing_information && Array.isArray(data.summary.missing_information) && data.summary.missing_information.length > 0 && (
+                {summaryData.missing_information && !summaryData.missing_information.toString().includes('None') && (
                   <div className="border-l-4 border-[#8f8b83] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#8f8b83]">{tSum('missingInformation')}</p>
-                    <ul className="mt-2 list-disc list-inside space-y-1">
-                      {data.summary.missing_information.map((info: string, idx: number) => (
-                        <li key={idx} className="text-sm font-semibold">{info}</li>
-                      ))}
-                    </ul>
+                    {typeof summaryData.missing_information === 'string' ? (
+                      <p className="mt-2 text-sm font-semibold">{summaryData.missing_information}</p>
+                    ) : Array.isArray(summaryData.missing_information) && summaryData.missing_information.length > 0 ? (
+                      <ul className="mt-2 list-disc list-inside space-y-1">
+                        {summaryData.missing_information.map((info: string, idx: number) => (
+                          <li key={idx} className="text-sm font-semibold">{info}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                 )}
 
-                {data.summary.recommended_specialty && (
+                {summaryData.recommended_specialty && (
                   <div className="border-l-4 border-[#236b52] pl-3 bg-[#b9dbcb] p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#236b52]">{tSum('recommendedSpecialty')}</p>
-                    <p className="mt-1 text-lg font-black">{data.summary.recommended_specialty}</p>
+                    <p className="mt-1 text-lg font-black">{summaryData.recommended_specialty}</p>
                   </div>
                 )}
               </div>
             )
-          ) : (
+          })() : (
             <p className="mt-2 font-semibold text-[#8f8b83]">{tSum('aiSummaryWillAppear')}</p>
           )}
         </div>
@@ -1256,7 +1292,7 @@ function Summary({
               </span>
             </div>
             <div className="mt-4 font-semibold leading-relaxed whitespace-pre-wrap text-[#141414]">
-              {typeof data.patient_summary === 'string' ? data.patient_summary : JSON.stringify(data.patient_summary, null, 2)}
+              {typeof data.patient_summary === 'string' ? data.patient_summary : 'Summary will appear here'}
             </div>
           </div>
         )}
