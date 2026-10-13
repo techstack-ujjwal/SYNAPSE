@@ -1,11 +1,13 @@
 'use client'
 
 import { ChangeEvent, useState, useEffect, useRef } from 'react'
-import { 
-  ArrowLeft, ArrowRight, Check, FileText, Languages, 
+import {
+  ArrowLeft, ArrowRight, Check, FileText, Languages,
   LogOut, Mic, MicOff, Plus, ScanFace, Send, Upload, Volume2, VolumeX, X,
-  AlertCircle, CheckCircle2, Sparkles, Activity
+  AlertCircle, CheckCircle2, Sparkles, Activity, Users, RefreshCw, Clock
 } from 'lucide-react'
+import { ParameterCard } from '@/components/ui/parameter-card'
+import { ReportComparison } from '@/components/ui/report-comparison'
 import { QRCodeSVG } from 'qrcode.react'
 import { useParams, useRouter, usePathname } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -13,6 +15,7 @@ import { localeNames, languageToLocale, Locale, defaultLocale } from '@/i18n/req
 import { browserSpeechSupported, speakInBrowser, startBrowserRecognition } from '@/lib/speech'
 
 type Mode = 'landing' | 'register' | 'returning' | 'dashboard'
+type DashboardSection = 'overview' | 'records' | 'reports' | 'prescriptions' | 'visits'
 type Step = 1 | 2 | 3 | 4
 type Form = { name: string; age: string; phone: string; sex: string; bp: string; sugar: string; weight: string; height: string; temperature: string }
 type Report = { id: number; name: string; size: string; file?: File; key_points?: string[] }
@@ -62,6 +65,12 @@ export default function Page() {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false)
   const [whisperEnabled, setWhisperEnabled] = useState(true)
   const [ttsEnabled, setTtsEnabled] = useState(true)
+
+  // Report comparison state
+  const [showComparison, setShowComparison] = useState(false)
+  const [comparisonData, setComparisonData] = useState<any>(null)
+  const [pastReportId, setPastReportId] = useState<number | null>(null)
+  const [presentReportId, setPresentReportId] = useState<number | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
@@ -510,6 +519,8 @@ export default function Page() {
       {mode === 'landing' ? (
         <Landing 
           tLanding={tLanding}
+          router={router}
+          currentLocale={currentLocale}
           onNew={() => {
             setMode('register')
             setForm(blank)
@@ -578,17 +589,18 @@ export default function Page() {
           )}
 
           {step === 3 && (
-            <Summary 
-              name={form.name} 
-              id={patientId} 
-              data={summary} 
-              reports={reports} 
-              form={form} 
-              onBack={() => setStep(2)} 
-              onNext={makeToken} 
+            <Summary
+              name={form.name}
+              id={patientId}
+              data={summary}
+              reports={reports}
+              form={form}
+              onBack={() => setStep(2)}
+              onNext={makeToken}
               playAiAudio={playAiAudio}
               tSum={tSum}
               tCommon={tCommon}
+              language={language}
             />
           )}
 
@@ -652,7 +664,7 @@ function Header({ language, onLanguageChange, tHeader, isPlayingAudio }: {
   )
 }
 
-function Landing({ onNew, onReturning, tLanding }: { onNew: () => void; onReturning: () => void; tLanding: any }) {
+function Landing({ onNew, onReturning, tLanding, router, currentLocale }: { onNew: () => void; onReturning: () => void; tLanding: any; router: any; currentLocale: string }) {
   return (
     <section className="mx-auto grid max-w-[1440px] gap-10 px-5 pb-16 pt-16 lg:grid-cols-[1fr_.8fr] lg:px-10">
       <div>
@@ -669,6 +681,11 @@ function Landing({ onNew, onReturning, tLanding }: { onNew: () => void; onReturn
           </button>
           <button onClick={onReturning} className="action bg-white flex items-center justify-center gap-2 font-black py-4 px-6 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all">
             {tLanding('returningPatient')} <ScanFace className="size-5" />
+          </button>
+        </div>
+        <div className="mt-4">
+          <button onClick={() => router.push(`/${currentLocale}/doctor-login`)} className="text-sm font-semibold text-[#8f8b83] hover:text-[#e44f2b] transition-colors">
+            Doctor Login →
           </button>
         </div>
       </div>
@@ -1015,15 +1032,16 @@ function Chat({
   )
 }
 
-function Summary({ 
-  name, id, data, reports, form, onBack, onNext, playAiAudio, tSum, tCommon 
-}: { 
-  name: string; id: string; data: any; reports: Report[]; form: Form; 
-  onBack: () => void; onNext: () => void; playAiAudio: (text: string) => void; 
-  tSum: any; tCommon: any 
+function Summary({
+  name, id, data, reports, form, onBack, onNext, playAiAudio, tSum, tCommon, language
+}: {
+  name: string; id: string; data: any; reports: Report[]; form: Form;
+  onBack: () => void; onNext: () => void; playAiAudio: (text: string) => void;
+  tSum: any; tCommon: any; language: string
 }) {
   const reportsAnalysis = data?.reports_analysis || []
   const allKeyPoints = data?.report_key_points || []
+  const allParameters = data?.all_parameters || []
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -1092,7 +1110,7 @@ function Summary({
                       <p className="text-xs font-black uppercase text-[#236b52] flex items-center gap-1 mb-2">
                         <Sparkles className="size-3.5" /> Important Points Extracted from Report (English):
                       </p>
-                      {points && points.length > 0 ? (
+                      {points && Array.isArray(points) && points.length > 0 ? (
                         <ul className="list-disc list-inside space-y-1 text-sm font-semibold text-[#141414]">
                           {points.map((pt: string, pIdx: number) => (
                             <li key={pIdx} className="leading-snug">{pt}</li>
@@ -1110,6 +1128,36 @@ function Summary({
             )}
           </div>
         </div>
+
+        {/* Parameter Analysis with Color Coding (Phase 2) */}
+        {allParameters && allParameters.length > 0 && (
+          <div className="mt-6 border-2 border-[#141414] bg-white p-5 shadow-[4px_4px_0_#141414]">
+            <div className="flex items-center justify-between border-b-2 border-[#141414] pb-3">
+              <p className="font-black text-lg flex items-center gap-2">
+                <Activity className="size-5 text-[#e44f2b]" /> Parameter Analysis
+              </p>
+              <div className="flex gap-2 text-xs font-bold">
+                <span className="flex items-center gap-1"><span className="w-3 h-3 bg-[#e44f2b]"></span> Severe</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 bg-[#f57c00]"></span> Slight</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 bg-[#236b52]"></span> Normal</span>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {allParameters.map((param: any, idx: number) => (
+                <ParameterCard
+                  key={idx}
+                  name={param.name}
+                  value={param.value}
+                  status={param.status}
+                  normal_range={param.normal_range}
+                  impact={param.impact}
+                  suggestion={param.suggestion}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* AI Analysis & Summary Section - ALWAYS IN ENGLISH (Requirement 4) */}
         <div className="mt-6 border-2 border-[#141414] bg-[#f5f1e8] p-5 shadow-[4px_4px_0_#141414]">
@@ -1156,7 +1204,7 @@ function Summary({
                   </div>
                 )}
 
-                {data.summary.red_flags && data.summary.red_flags.length > 0 && (
+                {data.summary.red_flags && Array.isArray(data.summary.red_flags) && data.summary.red_flags.length > 0 && (
                   <div className="border-l-4 border-[#e44f2b] pl-3 bg-[#fff3ef] p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#e44f2b] flex items-center gap-1">
                       <AlertCircle className="size-4" /> {tSum('redFlags')}
@@ -1169,7 +1217,7 @@ function Summary({
                   </div>
                 )}
 
-                {data.summary.missing_information && data.summary.missing_information.length > 0 && (
+                {data.summary.missing_information && Array.isArray(data.summary.missing_information) && data.summary.missing_information.length > 0 && (
                   <div className="border-l-4 border-[#8f8b83] pl-3 bg-white p-3 border-2 border-l-4 border-[#141414]">
                     <p className="text-xs font-black uppercase text-[#8f8b83]">{tSum('missingInformation')}</p>
                     <ul className="mt-2 list-disc list-inside space-y-1">
@@ -1192,6 +1240,23 @@ function Summary({
             <p className="mt-2 font-semibold text-[#8f8b83]">{tSum('aiSummaryWillAppear')}</p>
           )}
         </div>
+
+        {/* Patient-Friendly Summary in Patient's Language (Phase 3) */}
+        {data?.patient_summary && (
+          <div className="mt-6 border-2 border-[#b9dbcb] bg-[#e8f5e9] p-5 shadow-[4px_4px_0_#141414]">
+            <div className="flex items-center justify-between border-b-2 border-[#141414] pb-3">
+              <p className="font-black text-lg flex items-center gap-2">
+                <Sparkles className="size-5 text-[#236b52]" /> Patient Summary ({language})
+              </p>
+              <span className="text-xs bg-[#236b52] text-white px-2 py-0.5 font-bold uppercase">
+                Your Language
+              </span>
+            </div>
+            <div className="mt-4 font-semibold leading-relaxed whitespace-pre-wrap text-[#141414]">
+              {typeof data.patient_summary === 'string' ? data.patient_summary : JSON.stringify(data.patient_summary, null, 2)}
+            </div>
+          </div>
+        )}
 
         {/* Risk Assessment */}
         <div className="mt-6 border-2 border-[#141414] bg-[#fff3ef] p-4 flex items-center justify-between shadow-[4px_4px_0_#141414]">
@@ -1323,47 +1388,155 @@ function Returning({
   )
 }
 
-function Dashboard({ 
-  patientId, onNew, onLogout, tDash 
-}: { 
-  patientId: string; onNew: () => void; onLogout: () => void; tDash: any 
-}) {
+function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; onNew: () => void; onLogout: () => void; tDash: any }) {
+  const [section, setSection] = useState<DashboardSection>('overview')
+  const [data, setData] = useState<any>({})
+  const [reports, setReports] = useState<any[]>([])
+  const [showComparison, setShowComparison] = useState(false)
+  const [comparisonData, setComparisonData] = useState<any>(null)
+  const [pastReportId, setPastReportId] = useState<number | null>(null)
+  const [presentReportId, setPresentReportId] = useState<number | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [comparisonLoading, setComparisonLoading] = useState(false)
+  const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+  useEffect(() => {
+    fetch(`${API}/patients/${patientId}`).then(r => r.json()).then(setData).catch(() => {})
+    fetch(`${API}/patients/${patientId}/reports`).then(r => r.json()).then(setReports).catch(() => {})
+    fetch(`${API}/patients/${patientId}/visits`).then(r => r.json()).then(v => setData(d => ({ ...d, visits: v }))).catch(() => {})
+    fetch(`${API}/patients/${patientId}/prescriptions`).then(r => r.json()).then(p => setData(d => ({ ...d, prescriptions: p }))).catch(() => {})
+  }, [patientId])
+
+  const handleCompare = () => {
+    if (!pastReportId || !presentReportId || pastReportId === presentReportId) return
+    setComparisonLoading(true)
+    fetch(`${API}/patients/${patientId}/reports/compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id: patientId, past_report_id: pastReportId, present_report_id: presentReportId, language: 'English' })
+    }).then(r => r.json()).then(setComparisonData).catch(() => alert('Comparison failed')).finally(() => setComparisonLoading(false))
+  }
+
+  const deleteReport = (id: number) => confirm('Delete report?') && fetch(`${API}/patients/${patientId}/reports/${id}`, { method: 'DELETE' }).then(() => setReports(r => r.filter(x => x.id !== id)))
+
+  const sections = [
+    { id: 'overview', label: 'Overview', icon: Activity },
+    { id: 'records', label: 'Patient Records', icon: ScanFace },
+    { id: 'reports', label: 'Lab Reports', icon: FileText },
+    { id: 'prescriptions', label: 'Prescriptions', icon: FileText },
+    { id: 'visits', label: 'Visit History', icon: FileText }
+  ]
+
   return (
-    <main className="min-h-screen bg-[#f5f1e8]">
-      <header className="flex items-center justify-between px-5 py-5 lg:px-10 border-b-2 border-[#141414] bg-white">
+    <main className="min-h-screen bg-[#f5f1e8] flex">
+      <aside className="w-64 bg-white border-r-2 border-[#141414] p-6 hidden lg:block">
         <b className="text-xl font-black">synapse <span className="text-[#e44f2b]">ai</span></b>
-        <button onClick={onLogout} className="button-secondary flex items-center gap-2 font-black px-4 py-2 border-2 border-[#141414] bg-white shadow-[2px_2px_0_#141414]">
-          <LogOut className="size-4" /> {tDash('logout')}
-        </button>
-      </header>
-
-      <section className="mx-auto max-w-[1180px] px-5 pb-16 pt-8">
-        <p className="eyebrow">{tDash('eyebrow')}</p>
-        <h1 className="display text-4xl sm:text-5xl font-black">{tDash('title')}</h1>
-        
-        <div className="mt-8 grid gap-6 lg:grid-cols-[1.1fr_.9fr]">
-          <div className="panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
-            <p className="label font-black text-xs uppercase text-[#8f8b83]">{tDash('patientId')}</p>
-            <p className="text-2xl font-black">{patientId}</p>
-            <div className="mt-8 border-l-4 border-[#236b52] pl-4 bg-[#f5f1e8] p-4 border-2 border-[#141414]">
-              <p className="font-black text-lg">{tDash('previousVisit')}</p>
-              <p className="mt-1 font-semibold text-[#48453e]">{tDash('previousVisitDescription')}</p>
-            </div>
-            <button onClick={onNew} className="action mt-8 w-full bg-[#e44f2b] text-white font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#141414]">
-              {tDash('planNewVisit')}
+        <nav className="mt-8 space-y-2">
+          {sections.map(s => (
+            <button key={s.id} onClick={() => setSection(s.id as DashboardSection)} className={`w-full flex items-center gap-3 px-4 py-3 font-black border-2 transition-all ${section === s.id ? 'bg-[#e44f2b] text-white border-[#141414]' : 'bg-white border-transparent hover:border-[#141414]'}`}>
+              <s.icon className="size-4" /> {s.label}
             </button>
-          </div>
+          ))}
+        </nav>
+        <button onClick={onLogout} className="mt-8 w-full flex items-center gap-2 px-4 py-3 font-black border-2 border-[#141414] bg-white hover:bg-[#f5f1e8] transition-all">
+          <LogOut className="size-4" /> Logout
+        </button>
+      </aside>
 
-          <div className="panel bg-[#b9dbcb] border-2 border-[#141414] p-6 shadow-[6px_6px_0_#141414]">
-            <p className="eyebrow">{tDash('visitHistory')}</p>
-            <div className="grid gap-4 font-black mt-4">
-              <p className="bg-white p-3 border-2 border-[#141414] shadow-[2px_2px_0_#141414]">{tDash('currentDashboard')}</p>
-              <p className="bg-white p-3 border-2 border-[#141414] shadow-[2px_2px_0_#141414]">{tDash('prescriptions')}</p>
-              <p className="bg-white p-3 border-2 border-[#141414] shadow-[2px_2px_0_#141414]">{tDash('reports')}</p>
+      <div className="flex-1">
+        <header className="flex items-center justify-between px-5 py-5 lg:px-10 border-b-2 border-[#141414] bg-white lg:hidden">
+          <b className="text-xl font-black">synapse <span className="text-[#e44f2b]">ai</span></b>
+          <button onClick={onLogout} className="button-secondary flex items-center gap-2 font-black px-4 py-2 border-2 border-[#141414] bg-white shadow-[2px_2px_0_#141414]">
+            <LogOut className="size-4" /> Logout
+          </button>
+        </header>
+
+        <section className="mx-auto max-w-[1180px] px-5 pb-16 pt-8">
+          <p className="eyebrow">{tDash('eyebrow')}</p>
+          <h1 className="display text-4xl sm:text-5xl font-black">{tDash('title')}</h1>
+
+          {section === 'overview' && (
+            <div className="mt-8 space-y-6">
+              <div className="panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+                <div className="flex items-center justify-between border-b-2 border-[#141414] pb-4 mb-4">
+                  <div>
+                    <p className="label font-black text-xs uppercase text-[#8f8b83]">{tDash('patientId')}</p>
+                    <p className="text-2xl font-black">{patientId}</p>
+                  </div>
+                  {data.name && <div className="text-right"><p className="text-sm font-black text-[#8f8b83]">Patient Name</p><p className="text-xl font-black">{data.name}</p></div>}
+                </div>
+                {data.assigned_doctor && <div className="mt-4 bg-[#b9dbcb] border-2 border-[#141414] p-4"><p className="text-xs font-black uppercase text-[#236b52]">Assigned Doctor</p><p className="mt-1 font-black text-lg">{data.assigned_doctor.name}</p><p className="text-sm font-semibold text-[#48453e]">{data.assigned_doctor.specialty}</p></div>}
+                <button onClick={onNew} className="action mt-6 w-full bg-[#e44f2b] text-white font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#141414]">{tDash('planNewVisit')}</button>
+              </div>
+              {data.latest_visit && <div className="panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]"><p className="eyebrow">Latest Visit</p><p className="mt-2 font-black text-lg">{new Date(data.latest_visit.created_at).toLocaleDateString()}</p><p className="mt-1 font-semibold text-[#48453e]">{data.latest_visit.summary?.chief_complaint || 'No summary available'}</p></div>}
             </div>
-          </div>
-        </div>
-      </section>
+          )}
+
+          {section === 'records' && (
+            <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+              <p className="eyebrow">Patient Records</p>
+              <h2 className="text-2xl font-black mt-2">Your Information</h2>
+              <div className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
+                <div className="border-b pb-2 border-[#141414]/20"><span className="font-semibold">Name:</span><span className="font-black ml-2">{data.name || 'N/A'}</span></div>
+                <div className="border-b pb-2 border-[#141414]/20"><span className="font-semibold">Age:</span><span className="font-black ml-2">{data.age || 'N/A'}</span></div>
+                <div className="border-b pb-2 border-[#141414]/20"><span className="font-semibold">Sex:</span><span className="font-black ml-2">{data.sex || 'N/A'}</span></div>
+                <div className="border-b pb-2 border-[#141414]/20"><span className="font-semibold">Phone:</span><span className="font-black ml-2">{data.phone || 'N/A'}</span></div>
+              </div>
+              {data.vitals && <div className="mt-6 bg-[#f5f1e8] border-2 border-[#141414] p-4"><p className="text-xs font-black uppercase text-[#8f8b83]">Vitals</p><div className="mt-2 grid gap-2 text-sm font-semibold">{Object.entries(JSON.parse(data.vitals)).map(([k, v]) => <div key={k}><span className="text-[#8f8b83]">{k}:</span> {String(v)}</div>)}</div></div>}
+            </div>
+          )}
+
+          {section === 'reports' && (
+            <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+              <div className="flex items-center justify-between border-b-2 border-[#141414] pb-4 mb-4">
+                <div><p className="eyebrow">Lab Reports</p><h2 className="text-2xl font-black">Your Medical Reports</h2></div>
+                {reports.length >= 2 && <button onClick={() => setShowComparison(true)} className="flex items-center gap-2 bg-[#236b52] text-white px-4 py-2 font-black border-2 border-[#141414] shadow-[3px_3px_0_#141414]"><Activity className="size-4" /> Compare</button>}
+              </div>
+              {reports.length === 0 ? <div className="bg-[#f5f1e8] border-2 border-[#141414] p-8 text-center"><FileText className="size-12 mx-auto text-[#8f8b83] mb-4" /><p className="font-black text-lg text-[#8f8b83]">No reports</p></div> : <div className="space-y-3">{reports.map(r => <div key={r.id} className="border-2 border-[#141414] bg-[#faf8f5] p-4 flex items-center justify-between"><div className="flex items-center gap-3"><FileText className="size-5 text-[#236b52]" /><div><p className="font-black text-sm">{r.filename}</p><p className="text-xs font-semibold text-[#8f8b83]">{new Date(r.created_at).toLocaleDateString()}</p></div></div><button onClick={() => deleteReport(r.id)} className="text-[#e44f2b] hover:text-black p-2"><X className="size-4" /></button></div>)}</div>}
+            </div>
+          )}
+
+          {section === 'prescriptions' && (
+            <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+              <p className="eyebrow">Prescriptions</p>
+              <h2 className="text-2xl font-black mt-2">Your Prescriptions</h2>
+              {data.prescriptions?.length ? <div className="mt-6 space-y-4">{data.prescriptions.map((p: any, i: number) => <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4"><p className="font-black text-sm">{p.doctor_notes || 'No notes'}</p><div className="mt-2 text-xs font-semibold text-[#8f8b83]">{new Date(p.created_at).toLocaleDateString()}</div></div>)}</div> : <p className="mt-4 font-semibold text-[#8f8b83]">No prescriptions</p>}
+            </div>
+          )}
+
+          {section === 'visits' && (
+            <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+              <p className="eyebrow">Visit History</p>
+              <h2 className="text-2xl font-black mt-2">All Visits</h2>
+              {data.visits?.length ? <div className="mt-6 space-y-4">{data.visits.map((v: any, i: number) => <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4"><p className="font-black text-sm">{new Date(v.created_at).toLocaleDateString()}</p><p className="mt-1 font-semibold text-[#48453e]">{JSON.parse(v.summary)?.chief_complaint || 'No summary'}</p></div>)}</div> : <p className="mt-4 font-semibold text-[#8f8b83]">No visits recorded</p>}
+            </div>
+          )}
+
+          {showComparison && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white border-2 border-[#141414] shadow-[8px_8px_0_#141414] max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+                <div className="sticky top-0 bg-white border-b-2 border-[#141414] p-6 flex items-center justify-between">
+                  <h3 className="text-2xl font-black">Compare Reports</h3>
+                  <button onClick={() => { setShowComparison(false); setComparisonData(null); setPastReportId(null); setPresentReportId(null) }} className="text-[#e44f2b] hover:text-black p-2"><X className="size-6" /></button>
+                </div>
+                <div className="p-6">
+                  {!comparisonData ? (
+                    <>
+                      <div className="grid gap-6 sm:grid-cols-2">
+                        <div><label className="block text-sm font-black mb-2">Past Report</label><select value={pastReportId || ''} onChange={e => setPastReportId(e.target.value ? parseInt(e.target.value) : null)} className="w-full border-2 border-[#141414] bg-white px-4 py-3 font-black outline-none focus:border-[#236b52]"><option value="">Select past report</option>{reports.map(r => <option key={r.id} value={r.id}>{r.filename}</option>)}</select></div>
+                        <div><label className="block text-sm font-black mb-2">Present Report</label><select value={presentReportId || ''} onChange={e => setPresentReportId(e.target.value ? parseInt(e.target.value) : null)} className="w-full border-2 border-[#141414] bg-white px-4 py-3 font-black outline-none focus:border-[#236b52]"><option value="">Select present report</option>{reports.map(r => <option key={r.id} value={r.id}>{r.filename}</option>)}</select></div>
+                      </div>
+                      <button onClick={handleCompare} disabled={!pastReportId || !presentReportId || comparisonLoading} className="mt-6 w-full bg-[#e44f2b] text-white font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#141414] disabled:opacity-50">{comparisonLoading ? 'Comparing...' : 'Compare Reports'}</button>
+                    </>
+                  ) : (
+                    <ReportComparison comparison={comparisonData.comparison} summary={comparisonData.summary} pastReportName={reports.find(r => r.id === pastReportId)?.filename || 'Unknown'} presentReportName={reports.find(r => r.id === presentReportId)?.filename || 'Unknown'} />
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   )
 }

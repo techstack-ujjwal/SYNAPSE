@@ -10,10 +10,6 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  swcMinify: false,
-  experimental: {
-    turbo: undefined,
-  },
 }
 
 export default withNextIntl(nextConfig);

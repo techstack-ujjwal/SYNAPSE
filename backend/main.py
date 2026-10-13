@@ -58,6 +58,26 @@ class QueueIn(BaseModel):
     patient_id: str
     priority: str = 'medium'
 
+class DoctorIn(BaseModel):
+    name: str = Field(min_length=2, max_length=60)
+    specialty: str = Field(min_length=2, max_length=50)
+    phone: str = Field(pattern=r'^(?:\+91[6-9]\d{9}|[6-9]\d{9})$')
+    is_active: bool = True
+
+class PrescriptionIn(BaseModel):
+    patient_id: str
+    visit_id: Optional[int] = None
+    doctor_id: str
+    doctor_notes: str = ''
+    medications: list[dict] = []
+    language: str = 'English'
+
+class ReportComparisonIn(BaseModel):
+    patient_id: str
+    past_report_id: int
+    present_report_id: int
+    language: str = 'English'
+
 def get_db():
     global _global_conn
     if _global_conn is None:
@@ -66,10 +86,36 @@ def get_db():
         _global_conn.execute('CREATE TABLE IF NOT EXISTS patients (id TEXT PRIMARY KEY,name TEXT,age INTEGER,phone TEXT,sex TEXT,vitals TEXT,created_at TEXT)')
         _global_conn.execute('CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,filename TEXT,content_type TEXT,bytes INTEGER,extracted_text TEXT,key_points TEXT,created_at TEXT)')
         _global_conn.execute('CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,visit_date TEXT,summary TEXT,symptoms TEXT,risk TEXT,priority TEXT,created_at TEXT)')
-        _global_conn.execute('CREATE TABLE IF NOT EXISTS queue (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,token TEXT,priority TEXT,status TEXT,created_at TEXT)')
+        _global_conn.execute('CREATE TABLE IF NOT EXISTS queue (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,token TEXT,priority TEXT,status TEXT,assigned_doctor_id TEXT,consultation_type TEXT,created_at TEXT)')
         _global_conn.execute('CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,role TEXT,text TEXT,created_at TEXT)')
+        _global_conn.execute('CREATE TABLE IF NOT EXISTS doctors (id TEXT PRIMARY KEY,name TEXT,specialty TEXT,phone TEXT,is_active INTEGER,created_at TEXT)')
+        _global_conn.execute('CREATE TABLE IF NOT EXISTS prescriptions (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,visit_id INTEGER,doctor_id TEXT,doctor_notes TEXT,medications TEXT,created_at TEXT,language TEXT)')
+        _global_conn.execute('CREATE TABLE IF NOT EXISTS report_comparisons (id INTEGER PRIMARY KEY AUTOINCREMENT,patient_id TEXT,past_report_id INTEGER,present_report_id INTEGER,comparison_summary TEXT,created_at TEXT)')
         _global_conn.commit()
+
+        # Seed doctors if table is empty
+        doctor_count = _global_conn.execute('SELECT COUNT(*) FROM doctors').fetchone()[0]
+        if doctor_count == 0:
+            seed_doctors()
     return _global_conn
+
+def seed_doctors():
+    """Seed the database with proxy doctors."""
+    c = get_db()
+    doctors = [
+        ('DOC-001', 'Dr. Anus Kumar', 'Cardiology', '+919876543210', 1, datetime.now().isoformat()),
+        ('DOC-002', 'Dr. Priya Sharma', 'General Medicine', '+919876543211', 1, datetime.now().isoformat()),
+        ('DOC-003', 'Dr. Rajesh Gupta', 'Pediatrics', '+919876543212', 1, datetime.now().isoformat()),
+        ('DOC-004', 'Dr. Meena Patel', 'Orthopedics', '+919876543213', 1, datetime.now().isoformat()),
+        ('DOC-005', 'Dr. Vikram Singh', 'Dermatology', '+919876543214', 1, datetime.now().isoformat()),
+        ('DOC-006', 'Dr. Sunita Verma', 'Gynecology', '+919876543215', 1, datetime.now().isoformat()),
+        ('DOC-007', 'Dr. Amit Kumar', 'Neurology', '+919876543216', 1, datetime.now().isoformat()),
+        ('DOC-008', 'Dr. Kavita Rao', 'Ophthalmology', '+919876543217', 1, datetime.now().isoformat()),
+    ]
+    for doctor in doctors:
+        c.execute('INSERT INTO doctors (id, name, specialty, phone, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?)', doctor)
+    c.commit()
+    print(f"Seeded {len(doctors)} doctors into database")
 
 def save_conversation_message(patient_id: str, role: str, text: str):
     """Save a conversation message to the database for AI memory."""
@@ -208,6 +254,239 @@ def extract(text: str):
             found.append(x)
     return list(set(found))
 
+def analyze_parameter_normality(parameter_name: str, value_str: str, sex: str = 'Male', age: int = 30, language: str = 'English') -> dict:
+    """
+    Analyze a medical parameter and determine if it's normal, slightly abnormal, or severely abnormal.
+    Uses AI to generate impact and suggestions dynamically. Returns dict with status, normal_range, impact, and suggestion.
+    """
+    param_name_lower = parameter_name.lower()
+
+    # Extract numeric value from string
+    import re
+    numeric_match = re.search(r'[\d.]+', value_str)
+    if not numeric_match:
+        return {
+            'name': parameter_name,
+            'value': value_str,
+            'status': 'unknown',
+            'normal_range': 'N/A',
+            'impact': 'Unable to analyze - non-numeric value',
+            'suggestion': 'Please consult doctor for interpretation'
+        }
+
+    value = float(numeric_match.group())
+
+    # Define normal ranges based on parameter (rule-based for status determination)
+    status = 'unknown'
+    normal_range = 'N/A'
+    unit = ''
+
+    if 'hemoglobin' in param_name_lower or 'hb' in param_name_lower:
+        if sex.lower() == 'female':
+            normal_min, normal_max = 11.0, 15.0
+        else:
+            normal_min, normal_max = 12.0, 17.0
+
+        if value < normal_min * 0.7:
+            status = 'severely_low'
+        elif value < normal_min:
+            status = 'slightly_low'
+        elif value > normal_max * 1.2:
+            status = 'severely_high'
+        elif value > normal_max:
+            status = 'slightly_high'
+        else:
+            status = 'normal'
+
+        normal_range = f'{normal_min}-{normal_max} g/dL'
+        unit = 'g/dL'
+        value_display = f'{value} g/dL'
+
+    elif 'blood pressure' in param_name_lower or 'bp' in param_name_lower:
+        if '/' in value_str:
+            parts = value_str.split('/')
+            if len(parts) >= 2:
+                try:
+                    systolic = float(re.search(r'[\d.]+', parts[0]).group())
+                    diastolic = float(re.search(r'[\d.]+', parts[1]).group())
+
+                    if systolic > 180 or diastolic > 120:
+                        status = 'severely_high'
+                    elif systolic > 140 or diastolic > 90:
+                        status = 'slightly_high'
+                    elif systolic < 90 or diastolic < 60:
+                        status = 'severely_low'
+                    else:
+                        status = 'normal'
+
+                    normal_range = '90-120 / 60-80 mmHg'
+                    unit = 'mmHg'
+                    value_display = f'{systolic}/{diastolic} mmHg'
+                except:
+                    return {
+                        'name': parameter_name,
+                        'value': value_str,
+                        'status': 'unknown',
+                        'normal_range': '90-120 / 60-80 mmHg',
+                        'impact': 'Unable to parse blood pressure values',
+                        'suggestion': 'Please ensure format is systolic/diastolic (e.g., 120/80)'
+                    }
+        else:
+            return {
+                'name': parameter_name,
+                'value': value_str,
+                'status': 'unknown',
+                'normal_range': '90-120 / 60-80 mmHg',
+                'impact': 'Unable to parse blood pressure values',
+                'suggestion': 'Please ensure format is systolic/diastolic (e.g., 120/80)'
+            }
+
+    elif 'blood sugar' in param_name_lower or 'glucose' in param_name_lower or 'sugar' in param_name_lower:
+        normal_min, normal_max = 70.0, 140.0
+
+        if value < 50:
+            status = 'severely_low'
+        elif value < normal_min:
+            status = 'slightly_low'
+        elif value > 300:
+            status = 'severely_high'
+        elif value > normal_max:
+            status = 'slightly_high'
+        else:
+            status = 'normal'
+
+        normal_range = f'{normal_min}-{normal_max} mg/dL (fasting)'
+        unit = 'mg/dL'
+        value_display = f'{value} mg/dL'
+
+    elif 'wbc' in param_name_lower or 'white blood' in param_name_lower:
+        normal_min, normal_max = 4500.0, 11000.0
+
+        if value < 2000:
+            status = 'severely_low'
+        elif value < normal_min:
+            status = 'slightly_low'
+        elif value > 20000:
+            status = 'severely_high'
+        elif value > normal_max:
+            status = 'slightly_high'
+        else:
+            status = 'normal'
+
+        normal_range = f'{int(normal_min)}-{int(normal_max)} cells/μL'
+        unit = 'cells/μL'
+        value_display = f'{int(value)} cells/μL'
+
+    elif 'platelet' in param_name_lower:
+        normal_min, normal_max = 150000.0, 450000.0
+
+        if value < 50000:
+            status = 'severely_low'
+        elif value < normal_min:
+            status = 'slightly_low'
+        elif value > 600000:
+            status = 'severely_high'
+        elif value > normal_max:
+            status = 'slightly_high'
+        else:
+            status = 'normal'
+
+        normal_range = f'{int(normal_min)}-{int(normal_max)}/μL'
+        unit = '/μL'
+        value_display = f'{int(value)}/μL'
+
+    elif 'cholesterol' in param_name_lower:
+        normal_max = 200.0
+
+        if value > 300:
+            status = 'severely_high'
+        elif value > normal_max:
+            status = 'slightly_high'
+        else:
+            status = 'normal'
+
+        normal_range = f'<{normal_max} mg/dL'
+        unit = 'mg/dL'
+        value_display = f'{value} mg/dL'
+
+    else:
+        return {
+            'name': parameter_name,
+            'value': value_str,
+            'status': 'unknown',
+            'normal_range': 'N/A',
+            'impact': 'Parameter analysis not available',
+            'suggestion': 'Consult doctor for interpretation'
+        }
+
+    # Use AI to generate impact and suggestion (NO HARDCODING)
+    impact, suggestion = generate_parameter_explanation(
+        parameter_name, value_display, status, normal_range, sex, age, language
+    )
+
+    return {
+        'name': parameter_name,
+        'value': value_display,
+        'unit': unit,
+        'status': status,
+        'normal_range': normal_range,
+        'impact': impact,
+        'suggestion': suggestion
+    }
+
+def generate_parameter_explanation(parameter_name: str, value: str, status: str, normal_range: str, sex: str, age: int, language: str) -> tuple[str, str]:
+    """
+    Use AI to generate impact and suggestion for a medical parameter.
+    Returns (impact, suggestion) tuple.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        # Fallback when AI is unavailable
+        fallback_impact = f"{parameter_name} is {status.replace('_', ' ')}"
+        fallback_suggestion = "Please consult doctor for interpretation"
+        return fallback_impact, fallback_suggestion
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        system_prompt = f"""You are a medical assistant. Given a medical parameter, its value, status, and normal range, provide:
+1. A brief impact explanation (what this means for the patient's health)
+2. A practical suggestion (what the patient should do)
+
+Response format: JSON with keys "impact" and "suggestion".
+Keep both responses concise (under 30 words each), clear, and actionable.
+If status is "normal", provide reassuring explanation.
+If status is "severely_low" or "severely_high", emphasize urgency.
+Respond in {language}."""
+
+        user_prompt = f"""Parameter: {parameter_name}
+Value: {value}
+Status: {status}
+Normal Range: {normal_range}
+Patient Sex: {sex}
+Patient Age: {age}
+
+Generate impact and suggestion."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            response_format={'type': 'json_object'},
+            max_tokens=150,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt}
+            ]
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        return result.get('impact', 'Unable to generate impact'), result.get('suggestion', 'Unable to generate suggestion')
+
+    except Exception as e:
+        print(f"AI parameter explanation error: {e}")
+        return "Analysis unavailable", "Please consult doctor"
+
 def extract_text_from_pdf(file_content: bytes) -> str:
     """Extract text from PDF file content using PdfReader."""
     try:
@@ -249,6 +528,164 @@ WHISPER_LANG_MAP = {
     'संथाली': 'sat', 'sat': 'sat',
     'मारवाड़ी': 'hi', 'mwr': 'hi'  # Marwadi uses Devanagari script mapped to Hindi acoustic model
 }
+
+def translate_medical_summary(text: str, target_language: str = 'English') -> str:
+    """
+    Translate medical summary to patient's selected language using AI.
+    Preserves medical terminology accuracy while making it patient-friendly.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return text  # Return original if AI unavailable
+
+    if target_language.lower() == 'english' or target_language == 'en':
+        return text  # No translation needed
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        system_prompt = f"""You are a medical translator. Translate the following medical summary into {target_language}.
+
+CRITICAL RULES:
+1. Preserve medical accuracy - do not simplify or alter medical facts
+2. Use patient-friendly language while maintaining clinical precision
+3. Keep technical medical terms in English if no common translation exists
+4. Ensure the translation is natural and culturally appropriate
+5. Keep the same structure and formatting as the original
+6. Do NOT add or remove information
+
+Return ONLY the translated text, no explanations."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            max_tokens=1000,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': text}
+            ]
+        )
+
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return text  # Return original on error
+
+def compare_reports(past_report_data: dict, present_report_data: dict, language: str = 'English') -> dict:
+    """
+    Compare two medical reports and identify improvements, deteriorations, and changes.
+    Uses AI to generate intelligent comparison summary.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return {
+            'comparison': {
+                'improved': [],
+                'deteriorated': [],
+                'unchanged': [],
+                'new_abnormalities': [],
+                'resolved_abnormalities': []
+            },
+            'summary': 'AI comparison unavailable - please consult doctor',
+            'notes': 'OpenAI API not configured'
+        }
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        # Extract key points from both reports
+        past_key_points = past_report_data.get('key_points', [])
+        present_key_points = present_report_data.get('key_points', [])
+
+        # If key_points is a dict (new format), extract the array
+        if isinstance(past_key_points, dict):
+            past_key_points = past_key_points.get('key_points', [])
+        if isinstance(present_key_points, dict):
+            present_key_points = present_key_points.get('key_points', [])
+
+        past_text = '\n'.join(past_key_points) if past_key_points else 'No data'
+        present_text = '\n'.join(present_key_points) if present_key_points else 'No data'
+
+        system_prompt = f"""You are a medical report comparison specialist. Compare two medical reports and identify changes.
+
+CRITICAL RULES:
+1. Identify which parameters have improved (moved toward normal range)
+2. Identify which parameters have deteriorated (moved away from normal range)
+3. Identify which parameters remain unchanged
+4. Identify new abnormalities that appeared in the present report
+5. Identify abnormalities that have resolved (returned to normal)
+6. Return ONLY a valid JSON object with the following structure:
+{{
+  "improved": ["Parameter X: description of improvement"],
+  "deteriorated": ["Parameter Y: description of deterioration"],
+  "unchanged": ["Parameter Z: within normal range"],
+  "new_abnormalities": ["Parameter A: new concern"],
+  "resolved_abnormalities": ["Parameter B: now normal"]
+}}
+7. Keep each description concise (under 20 words)
+8. Provide summary in {language} if possible, otherwise English
+
+Return ONLY the JSON object, no explanations."""
+
+        user_prompt = f"""PAST REPORT ({past_report_data.get('filename', 'Unknown')}):
+{past_text}
+
+PRESENT REPORT ({present_report_data.get('filename', 'Unknown')}):
+{present_text}
+
+Compare these two reports and identify changes."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            response_format={'type': 'json_object'},
+            max_tokens=800,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt}
+            ]
+        )
+
+        result = json.loads(response.choices[0].message.content)
+
+        # Generate a summary in patient's language
+        summary_prompt = f"""Based on the comparison data: {json.dumps(result)}, provide a brief summary (under 50 words) in {language} explaining the overall trend.
+Highlight if the patient's condition has improved, worsened, or remained stable.
+If no significant changes, state that clearly."""
+
+        summary_response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            max_tokens=150,
+            messages=[
+                {'role': 'system', 'content': 'You are a medical summary assistant. Provide brief, clear summaries in the specified language.'},
+                {'role': 'user', 'content': summary_prompt}
+            ]
+        )
+
+        summary_text = summary_response.choices[0].message.content.strip()
+
+        return {
+            'comparison': result,
+            'summary': summary_text,
+            'notes': 'AI-generated comparison'
+        }
+
+    except Exception as e:
+        print(f"Report comparison error: {e}")
+        return {
+            'comparison': {
+                'improved': [],
+                'deteriorated': [],
+                'unchanged': [],
+                'new_abnormalities': [],
+                'resolved_abnormalities': []
+            },
+            'summary': 'Comparison analysis failed - please consult doctor',
+            'notes': f'Error: {str(e)}'
+        }
 
 def transcribe_audio(audio_data: str, language: str = 'English') -> Optional[str]:
     """Transcribe audio using OpenAI Whisper API with optimized regional context prompts."""
@@ -364,11 +801,17 @@ def text_to_speech(text: str, language: str = 'English', voice: str = 'nova') ->
         print(f"TTS error: {e}")
         return None
 
-def analyze_report_for_key_points(report_content: bytes, content_type: str, filename: str, conversation_summary: str = "") -> list[str]:
-    """Analyze medical report (PDF or image) using OpenAI to extract key clinical findings in English."""
+def analyze_report_for_key_points(report_content: bytes, content_type: str, filename: str, conversation_summary: str = "", patient_sex: str = 'Male', patient_age: int = 30, language: str = 'English') -> dict:
+    """
+    Analyze medical report (PDF or image) using OpenAI to extract key clinical findings in English.
+    Returns dict with key_points and analyzed_parameters with color-coding status.
+    """
     key = os.getenv('OPENAI_API_KEY')
     if not key:
-        return []
+        return {
+            'key_points': ["Report analysis unavailable - API not configured"],
+            'parameters': []
+        }
 
     try:
         from openai import OpenAI
@@ -454,7 +897,10 @@ Return ONLY the JSON array:"""
             )
             raw = response.choices[0].message.content.strip()
         else:
-            return ["Uploaded document attached for clinician examination."]
+            return {
+                'key_points': ["Uploaded document attached for clinician examination."],
+                'parameters': []
+            }
 
         # Clean JSON markdown fences if present
         cleaned = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
@@ -463,15 +909,38 @@ Return ONLY the JSON array:"""
 
         # Try to find JSON array inside text
         match = re.search(r'\[\s*[\s\S]*?\s*\]', cleaned)
+        key_points = []
         if match:
             parsed = json.loads(match.group(0))
             if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if item]
+                key_points = [str(item).strip() for item in parsed if item]
+        elif cleaned:
+            key_points = [cleaned]
 
-        return [cleaned] if cleaned else []
+        # Analyze parameters for color-coding
+        parameters = []
+        for point in key_points:
+            # Try to extract parameter name and value
+            # Pattern: "Parameter: value unit" or "Parameter value unit"
+            param_match = re.match(r'^([A-Za-z\s]+?):?\s*([\d./]+\s*[a-zA-Z/]*|\d+)', point)
+            if param_match:
+                param_name = param_match.group(1).strip()
+                param_value = param_match.group(2).strip()
+
+                # Analyze this parameter with AI-generated explanations
+                analysis = analyze_parameter_normality(param_name, param_value, patient_sex, patient_age, language)
+                parameters.append(analysis)
+
+        return {
+            'key_points': key_points,
+            'parameters': parameters
+        }
     except Exception as e:
         print(f"Report analysis error for {filename}: {e}")
-        return ["Report attached for physician review."]
+        return {
+            'key_points': ["Report attached for physician review."],
+            'parameters': []
+        }
 
 def calculate_priority(vitals: dict, symptoms: list[str]) -> Literal['low', 'medium', 'high']:
     """Calculate priority based on vitals and symptoms (fallback rule-based)."""
@@ -592,7 +1061,43 @@ def get_patient(patient_id: str):
     patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
     if not patient:
         raise HTTPException(status_code=404, detail='Patient not found')
-    return dict(patient)
+
+    patient_dict = dict(patient)
+
+    # Get latest visit
+    latest_visit = c.execute('SELECT * FROM visits WHERE patient_id = ? ORDER BY created_at DESC LIMIT 1', (patient_id,)).fetchone()
+    if latest_visit:
+        visit_dict = dict(latest_visit)
+        if visit_dict.get('summary'):
+            try:
+                visit_dict['summary'] = json.loads(visit_dict['summary'])
+            except:
+                pass
+        patient_dict['latest_visit'] = visit_dict
+
+    # Get assigned doctor from queue
+    queue_entry = c.execute("SELECT * FROM queue WHERE patient_id = ? AND status IN ('waiting', 'in_consultation') ORDER BY created_at DESC LIMIT 1", (patient_id,)).fetchone()
+    if queue_entry:
+        queue_dict = dict(queue_entry)
+        if queue_dict.get('assigned_doctor_id'):
+            doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (queue_dict['assigned_doctor_id'],)).fetchone()
+            if doctor:
+                patient_dict['assigned_doctor'] = dict(doctor)
+
+    # Get recent prescriptions
+    prescriptions = c.execute('SELECT * FROM prescriptions WHERE patient_id = ? ORDER BY created_at DESC LIMIT 5', (patient_id,)).fetchall()
+    prescriptions_list = []
+    for p in prescriptions:
+        p_dict = dict(p)
+        if p_dict.get('medications'):
+            try:
+                p_dict['medications'] = json.loads(p_dict['medications'])
+            except:
+                p_dict['medications'] = []
+        prescriptions_list.append(p_dict)
+    patient_dict['recent_prescriptions'] = prescriptions_list
+
+    return patient_dict
 
 @app.post('/patients/{patient_id}/reports')
 async def upload_report(patient_id: str, report: UploadFile = File(...)):
@@ -604,18 +1109,32 @@ async def upload_report(patient_id: str, report: UploadFile = File(...)):
     if len(content) > max_size:
         return {'ok': False, 'error': 'File size exceeds 5MB limit'}
 
+    # Get patient info for parameter analysis
+    c = get_db()
+    patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
+    patient_sex = 'Male'
+    patient_age = 30
+    patient_language = 'English'
+    if patient:
+        patient_dict = dict(patient)
+        patient_sex = patient_dict.get('sex', 'Male')
+        patient_age = patient_dict.get('age', 30)
+        # Language could be stored in patient record or determined from session
+        # For now, default to English - will be enhanced in Phase 3
+
     # Extract text from PDF if applicable
     extracted_text = ""
     if report.content_type == 'application/pdf':
         extracted_text = extract_text_from_pdf(content)
 
-    # Immediately analyze report for key points
-    key_points = analyze_report_for_key_points(content, report.content_type, report.filename)
+    # Immediately analyze report for key points with parameter analysis
+    analysis_result = analyze_report_for_key_points(content, report.content_type, report.filename, "", patient_sex, patient_age, patient_language)
+    key_points = analysis_result.get('key_points', [])
+    parameters = analysis_result.get('parameters', [])
 
-    c = get_db()
     cur = c.execute(
         'INSERT INTO reports (patient_id, filename, content_type, bytes, extracted_text, key_points, created_at) VALUES (?,?,?,?,?,?,?)',
-        (patient_id, report.filename, report.content_type, len(content), extracted_text, json.dumps(key_points), datetime.now().isoformat())
+        (patient_id, report.filename, report.content_type, len(content), extracted_text, json.dumps(analysis_result), datetime.now().isoformat())
     )
     c.commit()
 
@@ -624,7 +1143,8 @@ async def upload_report(patient_id: str, report: UploadFile = File(...)):
         'report_id': cur.lastrowid,
         'filename': report.filename,
         'extracted_text': extracted_text,
-        'key_points': key_points
+        'key_points': key_points,
+        'parameters': parameters
     }
 
 @app.get('/patients/{patient_id}/reports')
@@ -636,9 +1156,20 @@ def get_reports(patient_id: str):
         d = dict(r)
         if d.get('key_points'):
             try:
-                d['key_points'] = json.loads(d['key_points'])
+                parsed = json.loads(d['key_points'])
+                # Handle both old format (list) and new format (dict)
+                if isinstance(parsed, dict):
+                    d['key_points'] = parsed.get('key_points', [])
+                    d['parameters'] = parsed.get('parameters', [])
+                else:
+                    d['key_points'] = parsed
+                    d['parameters'] = []
             except:
                 d['key_points'] = []
+                d['parameters'] = []
+        else:
+            d['key_points'] = []
+            d['parameters'] = []
         result.append(d)
     return result
 
@@ -743,18 +1274,30 @@ def summary(p: SummaryIn):
             reports_context += f"- {filename} ({content_type})\n"
 
             # Parse existing key points or generate if missing
-            pts = []
+            analysis_result = {}
             if report_dict.get('key_points'):
                 try:
-                    pts = json.loads(report_dict['key_points'])
+                    analysis_result = json.loads(report_dict['key_points'])
                 except:
-                    pts = []
+                    analysis_result = {}
+
+            # Handle both old format (list) and new format (dict with key_points and parameters)
+            if isinstance(analysis_result, list):
+                # Old format - convert to new format
+                pts = analysis_result
+                params = []
+            else:
+                # New format
+                pts = analysis_result.get('key_points', [])
+                params = analysis_result.get('parameters', [])
 
             if not pts and extracted_text:
-                pts = analyze_report_for_key_points(extracted_text.encode('utf-8'), content_type, filename, conversation_text)
+                analysis_result = analyze_report_for_key_points(extracted_text.encode('utf-8'), content_type, filename, conversation_text, patient_dict.get('sex', 'Male'), patient_dict.get('age', 30), p.language)
+                pts = analysis_result.get('key_points', [])
+                params = analysis_result.get('parameters', [])
                 # Persist generated points
                 try:
-                    c.execute('UPDATE reports SET key_points = ? WHERE id = ?', (json.dumps(pts), report_dict['id']))
+                    c.execute('UPDATE reports SET key_points = ? WHERE id = ?', (json.dumps(analysis_result), report_dict['id']))
                     c.commit()
                 except:
                     pass
@@ -764,7 +1307,8 @@ def summary(p: SummaryIn):
                 reports_analysis.append({
                     'filename': filename,
                     'content_type': content_type,
-                    'key_points': pts
+                    'key_points': pts,
+                    'parameters': params
                 })
 
     # Token-optimized prompt requiring ENGLISH output for clinician handoff
@@ -839,6 +1383,10 @@ def summary(p: SummaryIn):
     # AI-assisted clinical triage priority
     priority = ai_determine_priority(p.form.get('vitals', {}), p.symptoms, conversation_text)
 
+    # Generate patient-friendly summary in patient's language (Phase 3)
+    patient_summary_english = json.dumps(summary_data, indent=2)
+    patient_summary_translated = translate_medical_summary(patient_summary_english, p.language)
+
     # Save visit record
     c.execute('INSERT INTO visits (patient_id, visit_date, summary, symptoms, risk, priority, created_at) VALUES (?,?,?,?,?,?,?)',
               (p.patient_id, datetime.now().isoformat(), json.dumps(summary_data), json.dumps(p.symptoms), risk, priority, datetime.now().isoformat()))
@@ -846,12 +1394,14 @@ def summary(p: SummaryIn):
 
     return {
         'patient_id': p.patient_id,
-        'summary': summary_data,
+        'summary': summary_data,  # English version for doctors
+        'patient_summary': patient_summary_translated,  # Translated version for patients
         'risk': risk,
         'priority': priority,
         'model': model,
         'reports_analysis': reports_analysis,
-        'report_key_points': list(dict.fromkeys(report_key_points))  # De-duplicate while preserving order
+        'report_key_points': list(dict.fromkeys(report_key_points)),  # De-duplicate while preserving order
+        'all_parameters': [param for report in reports_analysis for param in report.get('parameters', [])]  # Flatten all parameters
     }
 
 @app.post('/audio/transcribe')
@@ -891,8 +1441,16 @@ def queue(patient_id: Optional[str] = Query(None)):
                 'token': entry['token'],
                 'position': position + 1,
                 'priority': entry['priority'],
-                'patient_id': patient_id
+                'patient_id': patient_id,
+                'assigned_doctor_id': entry.get('assigned_doctor_id'),
+                'consultation_type': entry.get('consultation_type')
             })
+
+            # Get assigned doctor info
+            if entry.get('assigned_doctor_id'):
+                doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (entry['assigned_doctor_id'],)).fetchone()
+                if doctor:
+                    result['assigned_doctor'] = dict(doctor)
 
     return result
 
@@ -902,10 +1460,25 @@ def add_to_queue(q: QueueIn):
     token = f"S-{datetime.now().strftime('%y%m%d%H%M%S')[:10]}-{c.execute('SELECT COUNT(*) FROM queue').fetchone()[0] + 1}"
     valid_priorities = ['low', 'medium', 'high']
     priority = q.priority if q.priority in valid_priorities else 'medium'
-    c.execute('INSERT INTO queue (patient_id, token, priority, status, created_at) VALUES (?,?,?,?,?)',
-              (q.patient_id, token, priority, 'waiting', datetime.now().isoformat()))
+
+    # Auto-assign doctor based on priority/specialty (simplified for now - assigns to General Medicine by default)
+    # Will be enhanced in Phase 11 with specialty matching
+    assigned_doctor_id = 'DOC-002'  # Default to Dr. Priya Sharma (General Medicine)
+    consultation_type = 'initial'
+
+    c.execute('INSERT INTO queue (patient_id, token, priority, status, assigned_doctor_id, consultation_type, created_at) VALUES (?,?,?,?,?,?,?)',
+              (q.patient_id, token, priority, 'waiting', assigned_doctor_id, consultation_type, datetime.now().isoformat()))
     c.commit()
-    return {'token': token, 'priority': priority, 'status': 'waiting'}
+
+    # Get assigned doctor info
+    doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (assigned_doctor_id,)).fetchone()
+
+    return {
+        'token': token,
+        'priority': priority,
+        'status': 'waiting',
+        'assigned_doctor': dict(doctor) if doctor else None
+    }
 
 @app.patch('/queue/{queue_id}/status')
 def update_queue_status(queue_id: int, status: Literal['waiting', 'in_consultation', 'completed']):
@@ -914,11 +1487,212 @@ def update_queue_status(queue_id: int, status: Literal['waiting', 'in_consultati
     c.commit()
     return {'ok': True}
 
+@app.patch('/queue/{queue_id}/reassign')
+def reassign_doctor(queue_id: int, new_doctor_id: str = Query(...)):
+    c = get_db()
+    # Verify doctor exists
+    doctor = c.execute('SELECT * FROM doctors WHERE id = ? AND is_active = 1', (new_doctor_id,)).fetchone()
+    if not doctor:
+        raise HTTPException(status_code=404, detail='Doctor not found or inactive')
+
+    c.execute('UPDATE queue SET assigned_doctor_id = ? WHERE id = ?', (new_doctor_id, queue_id))
+    c.commit()
+    return {'ok': True, 'assigned_doctor': dict(doctor)}
+
 @app.get('/patients/{patient_id}/visits')
 def get_patient_visits(patient_id: str):
     c = get_db()
     visits = c.execute('SELECT * FROM visits WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
     return [dict(v) for v in visits]
+
+# --- Doctor Endpoints ---
+
+@app.get('/doctors')
+def get_doctors():
+    c = get_db()
+    doctors = c.execute('SELECT * FROM doctors WHERE is_active = 1 ORDER BY specialty, name').fetchall()
+    return [dict(d) for d in doctors]
+
+@app.get('/doctors/{doctor_id}')
+def get_doctor(doctor_id: str):
+    c = get_db()
+    doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (doctor_id,)).fetchone()
+    if not doctor:
+        raise HTTPException(status_code=404, detail='Doctor not found')
+    return dict(doctor)
+
+@app.post('/doctors/login')
+def doctor_login(doctor_id: str = Query(...)):
+    c = get_db()
+    doctor = c.execute('SELECT * FROM doctors WHERE id = ? AND is_active = 1', (doctor_id,)).fetchone()
+    if not doctor:
+        raise HTTPException(status_code=404, detail='Doctor not found or inactive')
+    return dict(doctor)
+
+@app.get('/doctors/{doctor_id}/patients')
+def get_doctor_patients(doctor_id: str):
+    c = get_db()
+    # Get patients in queue assigned to this doctor
+    queue_patients = c.execute('''
+        SELECT q.*, p.name as patient_name, p.age, p.phone
+        FROM queue q
+        JOIN patients p ON q.patient_id = p.id
+        WHERE q.assigned_doctor_id = ? AND q.status IN ('waiting', 'in_consultation')
+        ORDER BY q.created_at
+    ''', (doctor_id,)).fetchall()
+    return [dict(p) for p in queue_patients]
+
+@app.get('/doctors/{doctor_id}/patients/{patient_id}/review')
+def get_patient_review(doctor_id: str, patient_id: str):
+    c = get_db()
+    # Get patient details
+    patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
+    if not patient:
+        raise HTTPException(status_code=404, detail='Patient not found')
+
+    # Get reports
+    reports = c.execute('SELECT * FROM reports WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
+    reports_list = []
+    for r in reports:
+        r_dict = dict(r)
+        if r_dict.get('key_points'):
+            try:
+                parsed = json.loads(r_dict['key_points'])
+                # Handle both old format (list) and new format (dict)
+                if isinstance(parsed, dict):
+                    r_dict['key_points'] = parsed.get('key_points', [])
+                    r_dict['parameters'] = parsed.get('parameters', [])
+                else:
+                    r_dict['key_points'] = parsed
+                    r_dict['parameters'] = []
+            except:
+                r_dict['key_points'] = []
+                r_dict['parameters'] = []
+        else:
+            r_dict['key_points'] = []
+            r_dict['parameters'] = []
+        reports_list.append(r_dict)
+
+    # Get visit history
+    visits = c.execute('SELECT * FROM visits WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
+    visits_list = []
+    for v in visits:
+        v_dict = dict(v)
+        if v_dict.get('summary'):
+            try:
+                v_dict['summary'] = json.loads(v_dict['summary'])
+            except:
+                pass
+        if v_dict.get('symptoms'):
+            try:
+                v_dict['symptoms'] = json.loads(v_dict['symptoms'])
+            except:
+                v_dict['symptoms'] = []
+        visits_list.append(v_dict)
+
+    # Get prescriptions
+    prescriptions = c.execute('SELECT * FROM prescriptions WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
+    prescriptions_list = []
+    for p in prescriptions:
+        p_dict = dict(p)
+        if p_dict.get('medications'):
+            try:
+                p_dict['medications'] = json.loads(p_dict['medications'])
+            except:
+                p_dict['medications'] = []
+        prescriptions_list.append(p_dict)
+
+    return {
+        'patient': dict(patient),
+        'reports': reports_list,
+        'visits': visits_list,
+        'prescriptions': prescriptions_list
+    }
+
+# --- Prescription Endpoints ---
+
+@app.post('/prescriptions')
+def create_prescription(p: PrescriptionIn):
+    c = get_db()
+    cur = c.execute('''
+        INSERT INTO prescriptions (patient_id, visit_id, doctor_id, doctor_notes, medications, created_at, language)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (p.patient_id, p.visit_id, p.doctor_id, p.doctor_notes, json.dumps(p.medications), datetime.now().isoformat(), p.language))
+    c.commit()
+    return {'prescription_id': cur.lastrowid, 'ok': True}
+
+@app.get('/patients/{patient_id}/prescriptions')
+def get_patient_prescriptions(patient_id: str):
+    c = get_db()
+    prescriptions = c.execute('SELECT * FROM prescriptions WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
+    result = []
+    for p in prescriptions:
+        p_dict = dict(p)
+        if p_dict.get('medications'):
+            try:
+                p_dict['medications'] = json.loads(p_dict['medications'])
+            except:
+                p_dict['medications'] = []
+        result.append(p_dict)
+    return result
+
+# --- Report Comparison Endpoints ---
+
+@app.post('/patients/{patient_id}/reports/compare')
+def compare_reports_api(patient_id: str, p: ReportComparisonIn):
+    c = get_db()
+    # Get both reports
+    past_report = c.execute('SELECT * FROM reports WHERE id = ? AND patient_id = ?', (p.past_report_id, patient_id)).fetchone()
+    present_report = c.execute('SELECT * FROM reports WHERE id = ? AND patient_id = ?', (p.present_report_id, patient_id)).fetchone()
+
+    if not past_report or not present_report:
+        raise HTTPException(status_code=404, detail='One or both reports not found')
+
+    # Use AI to compare reports
+    past_report_dict = dict(past_report)
+    present_report_dict = dict(present_report)
+
+    comparison_result = compare_reports(past_report_dict, present_report_dict, p.language)
+
+    # Save comparison
+    comparison_summary = {
+        'past_report': {
+            'id': past_report_dict['id'],
+            'filename': past_report_dict['filename'],
+            'created_at': past_report_dict['created_at']
+        },
+        'present_report': {
+            'id': present_report_dict['id'],
+            'filename': present_report_dict['filename'],
+            'created_at': present_report_dict['created_at']
+        },
+        'comparison': comparison_result['comparison'],
+        'summary': comparison_result['summary'],
+        'notes': comparison_result['notes']
+    }
+
+    cur = c.execute('''
+        INSERT INTO report_comparisons (patient_id, past_report_id, present_report_id, comparison_summary, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (patient_id, p.past_report_id, p.present_report_id, json.dumps(comparison_summary), datetime.now().isoformat()))
+    c.commit()
+
+    return comparison_summary
+
+@app.get('/patients/{patient_id}/report-comparisons')
+def get_report_comparisons(patient_id: str):
+    c = get_db()
+    comparisons = c.execute('SELECT * FROM report_comparisons WHERE patient_id = ? ORDER BY created_at DESC', (patient_id,)).fetchall()
+    result = []
+    for comp in comparisons:
+        comp_dict = dict(comp)
+        if comp_dict.get('comparison_summary'):
+            try:
+                comp_dict['comparison_summary'] = json.loads(comp_dict['comparison_summary'])
+            except:
+                pass
+        result.append(comp_dict)
+    return result
 
 if __name__ == '__main__':
     import uvicorn
