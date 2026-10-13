@@ -29,13 +29,18 @@ export default function ReviewPatientPage() {
   useEffect(() => {
     const doc = localStorage.getItem('doctor')
     if (!doc) return router.push(`/${params.locale}/doctor-login`)
-    const docData = JSON.parse(doc)
-    setDoctor(docData)
-    fetch(`${API}/doctors/${docData.id}/patients/${params.patient_id}/review`)
-      .then(r => r.json())
-      .then(setData)
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    try {
+      const docData = typeof doc === 'string' ? JSON.parse(doc) : doc
+      setDoctor(docData)
+      fetch(`${API}/doctors/${docData.id}/patients/${params.patient_id}/review`)
+        .then(r => r.json())
+        .then(setData)
+        .catch(() => {})
+        .finally(() => setLoading(false))
+    } catch (err) {
+      console.error('Error parsing doctor data:', err)
+      router.push(`/${params.locale}/doctor-login`)
+    }
 
     // Fetch all doctors for reassignment
     fetch(`${API}/doctors`)
@@ -225,7 +230,7 @@ export default function ReviewPatientPage() {
             <div className="panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
               <p className="eyebrow">Vitals</p>
               <div className="mt-4 grid gap-2 text-sm">
-                {Object.entries(JSON.parse(data.patient.vitals)).map(([k, v]) => (
+                {Object.entries(typeof data.patient.vitals === 'string' ? JSON.parse(data.patient.vitals) : data.patient.vitals).map(([k, v]) => (
                   <div key={k} className="flex justify-between border-b pb-2 border-[#141414]/20"><span className="font-semibold capitalize">{k}:</span><span className="font-black">{String(v)}</span></div>
                 ))}
               </div>
@@ -259,7 +264,13 @@ export default function ReviewPatientPage() {
                 {data.visits.map((v: any, i: number) => (
                   <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-3">
                     <p className="font-black text-sm">{new Date(v.created_at).toLocaleDateString()}</p>
-                    <p className="mt-1 text-xs font-semibold text-[#48453e]">{typeof v.summary === 'string' ? v.summary : JSON.parse(v.summary)?.chief_complaint || 'No summary'}</p>
+                    <p className="mt-1 text-xs font-semibold text-[#48453e]">
+                      {typeof v.summary === 'string'
+                        ? v.summary
+                        : typeof v.summary === 'object' && v.summary
+                          ? v.summary.chief_complaint || 'No summary'
+                          : 'No summary'}
+                    </p>
                   </div>
                 ))}
               </div>
