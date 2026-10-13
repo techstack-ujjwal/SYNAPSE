@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { LogIn, ArrowLeft } from 'lucide-react'
 
@@ -9,6 +9,7 @@ const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export default function DoctorLoginPage() {
   const router = useRouter()
+  const params = useParams()
   const t = useTranslations('doctor')
   const [doctorId, setDoctorId] = useState('')
   const [loading, setLoading] = useState(false)
@@ -18,26 +19,32 @@ export default function DoctorLoginPage() {
     if (!doctorId.trim()) return setError('Please enter Doctor ID')
     setLoading(true)
     setError('')
-    fetch(`${API}/doctors/login?doctor_id=${encodeURIComponent(doctorId)}`)
-      .then(r => r.json())
+    fetch(`${API}/doctors/login?doctor_id=${encodeURIComponent(doctorId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    })
+      .then(r => {
+        if (!r.ok) throw new Error('Doctor not found')
+        return r.json()
+      })
       .then(data => {
         localStorage.setItem('doctor', JSON.stringify(data))
-        router.push('/en/doctor-dashboard')
+        router.push(`/${params.locale}/doctor-dashboard`)
       })
-      .catch(() => setError('Login failed'))
+      .catch(() => setError('Login failed - Invalid Doctor ID'))
       .finally(() => setLoading(false))
   }
 
   return (
     <main className="min-h-screen bg-[#f5f1e8] flex items-center justify-center px-5">
       <div className="w-full max-w-md panel border-2 border-[#141414] bg-white p-8 shadow-[8px_8px_0_#141414]">
-        <button onClick={() => router.push('/')} className="flex items-center gap-2 font-black text-sm text-[#8f8b83] hover:text-[#141414] mb-6">
+        <button onClick={() => router.push(`/${params.locale}`)} className="flex items-center gap-2 font-black text-sm text-[#8f8b83] hover:text-[#141414] mb-6">
           <ArrowLeft className="size-4" /> Back to Home
         </button>
         <p className="eyebrow">Doctor Portal</p>
         <h1 className="display text-4xl font-black mt-2">Login</h1>
         <p className="mt-4 font-semibold text-[#48453e]">Enter your Doctor ID to access the dashboard</p>
-        
+
         <div className="mt-8">
           <label className="block text-sm font-black mb-2">Doctor ID</label>
           <input

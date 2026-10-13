@@ -1414,7 +1414,10 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
 
   useEffect(() => {
     fetch(`${API}/patients/${patientId}`).then(r => r.json()).then(setData).catch(() => {})
-    fetch(`${API}/patients/${patientId}/reports`).then(r => r.json()).then(setReports).catch(() => {})
+    fetch(`${API}/patients/${patientId}/reports`)
+      .then(r => r.json())
+      .then(data => setReports(Array.isArray(data) ? data : []))
+      .catch(() => setReports([]))
     fetch(`${API}/patients/${patientId}/visits`).then(r => r.json()).then(v => setData(d => ({ ...d, visits: v }))).catch(() => {})
     fetch(`${API}/patients/${patientId}/prescriptions`).then(r => r.json()).then(p => setData(d => ({ ...d, prescriptions: p }))).catch(() => {})
   }, [patientId])

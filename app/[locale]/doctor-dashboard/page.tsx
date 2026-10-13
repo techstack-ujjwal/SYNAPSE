@@ -15,14 +15,34 @@ export default function DoctorDashboard() {
 
   useEffect(() => {
     const doc = localStorage.getItem('doctor')
-    if (!doc) return router.push(`/${params.locale}/doctor-login`)
-    const docData = JSON.parse(doc)
-    setDoctor(docData)
-    fetch(`${API}/doctors/${docData.id}/patients`)
-      .then(r => r.json())
-      .then(setPatients)
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    if (!doc) {
+      router.push(`/${params.locale}/doctor-login`)
+      return
+    }
+    try {
+      const docData = JSON.parse(doc)
+      if (!docData || !docData.id) {
+        localStorage.removeItem('doctor')
+        router.push(`/${params.locale}/doctor-login`)
+        return
+      }
+      setDoctor(docData)
+      fetch(`${API}/doctors/${docData.id}/patients`)
+        .then(r => r.json())
+        .then(data => {
+          console.log('Patients data:', data)
+          setPatients(Array.isArray(data) ? data : [])
+        })
+        .catch(err => {
+          console.error('Error fetching patients:', err)
+          setPatients([])
+        })
+        .finally(() => setLoading(false))
+    } catch (err) {
+      console.error('Error parsing doctor data:', err)
+      localStorage.removeItem('doctor')
+      router.push(`/${params.locale}/doctor-login`)
+    }
   }, [router, params.locale])
 
   const handleLogout = () => {

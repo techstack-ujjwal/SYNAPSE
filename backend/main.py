@@ -1574,7 +1574,7 @@ def reassign_doctor(queue_id: int, new_doctor_id: str = Query(...)):
     c.commit()
     return {'ok': True, 'assigned_doctor': dict(doctor)}
 
-@app.post('/queue/reassign-by-patient')
+@app.api_route('/queue/reassign-by-patient', methods=['POST', 'PATCH'])
 def reassign_doctor_by_patient(p: ReassignDoctorIn):
     """
     Phase 13.1: Reassign doctor by patient_id (more convenient for frontend).
@@ -1623,7 +1623,7 @@ def get_doctor(doctor_id: str):
         raise HTTPException(status_code=404, detail='Doctor not found')
     return dict(doctor)
 
-@app.post('/doctors/login')
+@app.api_route('/doctors/login', methods=['GET', 'POST'])
 def doctor_login(doctor_id: str = Query(...)):
     c = get_db()
     doctor = c.execute('SELECT * FROM doctors WHERE id = ? AND is_active = 1', (doctor_id,)).fetchone()
@@ -1997,7 +1997,7 @@ Generate a complete report in {language}."""
             'error': str(e)
         }
 
-@app.post('/doctors/{doctor_id}/patients/{patient_id}/generate-report')
+@app.api_route('/doctors/{doctor_id}/patients/{patient_id}/generate-report', methods=['POST', 'PUT'])
 def generate_report_endpoint(doctor_id: str, patient_id: str, p: GenerateReportIn):
     """
     Phase 10.1: Generate patient report in patient's language.
