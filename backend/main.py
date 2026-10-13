@@ -57,6 +57,7 @@ class TextToSpeechIn(BaseModel):
 class QueueIn(BaseModel):
     patient_id: str
     priority: str = 'medium'
+    symptoms: list[str] = []
 
 class DoctorIn(BaseModel):
     name: str = Field(min_length=2, max_length=60)
@@ -77,6 +78,22 @@ class ReportComparisonIn(BaseModel):
     past_report_id: int
     present_report_id: int
     language: str = 'English'
+
+class HandwrittenReportIn(BaseModel):
+    patient_id: str
+    language: str = 'English'
+
+class GenerateReportIn(BaseModel):
+    patient_id: str
+    doctor_id: str
+    doctor_notes: str = ''
+    medications: list[dict] = []
+    diagnosis: str = ''
+    language: str = 'English'
+
+class ReassignDoctorIn(BaseModel):
+    patient_id: str
+    new_doctor_id: str
 
 def get_db():
     global _global_conn
@@ -988,6 +1005,65 @@ def calculate_priority(vitals: dict, symptoms: list[str]) -> Literal['low', 'med
         return 'medium'
     return 'low'
 
+def match_doctor_specialty(symptoms: list[str], conversation_summary: str = "") -> str:
+    """
+    Phase 11.2: Match patient symptoms to appropriate doctor specialty.
+    Returns doctor_id of the most appropriate specialist.
+    """
+    # Specialty mapping based on symptoms
+    specialty_keywords = {
+        'Cardiology': ['chest pain', 'heart', 'cardiac', 'palpitation', 'breathlessness', 'shortness of breath', 'hypertension', 'bp', 'blood pressure'],
+        'Pediatrics': ['child', 'kid', 'baby', 'infant', 'toddler', 'children', 'pediatric'],
+        'Orthopedics': ['bone', 'joint', 'fracture', 'sprain', 'muscle', 'back pain', 'knee', 'shoulder', 'arthritis'],
+        'Dermatology': ['skin', 'rash', 'itch', 'acne', 'eczema', 'dermatitis', 'fungal', 'allergy'],
+        'Ophthalmology': ['eye', 'vision', 'blurry', 'cataract', 'glaucoma', 'conjunctivitis', 'sight'],
+        'Neurology': ['headache', 'migraine', 'seizure', 'dizziness', 'numbness', 'tingling', 'stroke', 'memory', 'neural'],
+        'Gynecology': ['pregnant', 'pregnancy', 'menstrual', 'period', 'uterine', 'ovarian', 'women', 'female', 'abortion'],
+    }
+
+    # Combine symptoms and conversation summary for analysis
+    all_text = ' '.join(symptoms) + ' ' + conversation_summary.lower()
+
+    # Score each specialty based on keyword matches
+    specialty_scores = {}
+    for specialty, keywords in specialty_keywords.items():
+        score = 0
+        for keyword in keywords:
+            if keyword.lower() in all_text:
+                score += 1
+        specialty_scores[specialty] = score
+
+    # Find the specialty with highest score
+    best_specialty = max(specialty_scores, key=specialty_scores.get) if specialty_scores else 'General Medicine'
+
+    # If no matches or low score, default to General Medicine
+    if specialty_scores[best_specialty] == 0:
+        best_specialty = 'General Medicine'
+
+    # Get doctor ID for the best specialty
+    c = get_db()
+    # Get an active doctor with the matching specialty
+    doctor = c.execute(
+        'SELECT id FROM doctors WHERE specialty = ? AND is_active = 1 LIMIT 1',
+        (best_specialty,)
+    ).fetchone()
+
+    if doctor:
+        return doctor[0]
+
+    # Fallback: return first active General Medicine doctor
+    doctor = c.execute(
+        'SELECT id FROM doctors WHERE specialty = ? AND is_active = 1 LIMIT 1',
+        ('General Medicine',)
+    ).fetchone()
+
+    if doctor:
+        return doctor[0]
+
+    # Ultimate fallback: return first active doctor
+    doctor = c.execute('SELECT id FROM doctors WHERE is_active = 1 LIMIT 1').fetchone()
+    return doctor[0] if doctor else 'DOC-002'
+
 def ai_determine_priority(vitals: dict, symptoms: list[str], conversation_summary: str) -> Literal['low', 'medium', 'high']:
     """Use AI to determine priority based on comprehensive data."""
     key = os.getenv('OPENAI_API_KEY')
@@ -1461,9 +1537,8 @@ def add_to_queue(q: QueueIn):
     valid_priorities = ['low', 'medium', 'high']
     priority = q.priority if q.priority in valid_priorities else 'medium'
 
-    # Auto-assign doctor based on priority/specialty (simplified for now - assigns to General Medicine by default)
-    # Will be enhanced in Phase 11 with specialty matching
-    assigned_doctor_id = 'DOC-002'  # Default to Dr. Priya Sharma (General Medicine)
+    # Phase 11.1: Auto-assign doctor based on symptoms/specialty matching
+    assigned_doctor_id = match_doctor_specialty(q.symptoms)
     consultation_type = 'initial'
 
     c.execute('INSERT INTO queue (patient_id, token, priority, status, assigned_doctor_id, consultation_type, created_at) VALUES (?,?,?,?,?,?,?)',
@@ -1497,6 +1572,33 @@ def reassign_doctor(queue_id: int, new_doctor_id: str = Query(...)):
 
     c.execute('UPDATE queue SET assigned_doctor_id = ? WHERE id = ?', (new_doctor_id, queue_id))
     c.commit()
+    return {'ok': True, 'assigned_doctor': dict(doctor)}
+
+@app.post('/queue/reassign-by-patient')
+def reassign_doctor_by_patient(p: ReassignDoctorIn):
+    """
+    Phase 13.1: Reassign doctor by patient_id (more convenient for frontend).
+    Finds the active queue entry for the patient and reassigns the doctor.
+    """
+    c = get_db()
+    # Verify doctor exists
+    doctor = c.execute('SELECT * FROM doctors WHERE id = ? AND is_active = 1', (p.new_doctor_id,)).fetchone()
+    if not doctor:
+        raise HTTPException(status_code=404, detail='Doctor not found or inactive')
+
+    # Find active queue entry for patient
+    queue_entry = c.execute(
+        'SELECT id FROM queue WHERE patient_id = ? AND status IN (\'waiting\', \'in_consultation\') ORDER BY created_at DESC LIMIT 1',
+        (p.patient_id,)
+    ).fetchone()
+
+    if not queue_entry:
+        raise HTTPException(status_code=404, detail='No active queue entry found for patient')
+
+    # Update the queue entry
+    c.execute('UPDATE queue SET assigned_doctor_id = ? WHERE id = ?', (p.new_doctor_id, queue_entry[0]))
+    c.commit()
+
     return {'ok': True, 'assigned_doctor': dict(doctor)}
 
 @app.get('/patients/{patient_id}/visits')
@@ -1692,6 +1794,224 @@ def get_report_comparisons(patient_id: str):
             except:
                 pass
         result.append(comp_dict)
+    return result
+
+# --- Handwritten Report OCR (Phase 9) ---
+
+def extract_handwritten_text(image_content: bytes, content_type: str, language: str = 'English') -> dict:
+    """
+    Extract text from handwritten prescription/report using OpenAI GPT-4o Vision.
+    Returns structured data with extracted text and fields.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return {
+            'extracted_text': 'OCR unavailable - API not configured',
+            'structured_data': {}
+        }
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        base64_img = base64.b64encode(image_content).decode('utf-8')
+        mime = content_type
+
+        system_prompt = """You are a medical document OCR specialist specializing in handwritten prescriptions and medical reports.
+Extract all text from the image and structure it appropriately.
+
+CRITICAL RULES:
+1. Extract ALL text visible in the image, including handwriting
+2. If it's a prescription, identify: medication names, dosages, frequency, duration
+3. If it's a report, identify: patient info, findings, diagnoses, recommendations
+4. Return a JSON object with:
+   - "extracted_text": all text as a single string
+   - "medications": array of {name, dosage, frequency, duration} if applicable
+   - "diagnosis": diagnosis or findings if applicable
+   - "notes": any additional notes or instructions
+5. Preserve the original language of the document
+6. If unsure about any field, leave it empty but include what you can extract
+
+Return ONLY the JSON object, no explanations."""
+
+        user_prompt = f"""Extract and structure the text from this medical document in {language} if possible, otherwise preserve original language.
+Focus on medications, dosages, and any medical findings."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o',
+            temperature=0.2,
+            response_format={'type': 'json_object'},
+            max_tokens=1000,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': user_prompt},
+                        {'type': 'image_url', 'image_url': {'url': f"data:{mime};base64,{base64_img}"}}
+                    ]
+                }
+            ]
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        return result
+
+    except Exception as e:
+        print(f"Handwritten OCR error: {e}")
+        return {
+            'extracted_text': 'OCR extraction failed',
+            'structured_data': {},
+            'error': str(e)
+        }
+
+@app.post('/doctors/upload-handwritten')
+async def upload_handwritten_report(report: UploadFile = File(...), patient_id: str = Query(...), language: str = Query('English')):
+    """
+    Phase 9.1: Upload handwritten prescription/report for OCR extraction.
+    Accepts image file and returns extracted text with structured data.
+    """
+    if report.content_type not in {'image/jpeg', 'image/png', 'image/webp'}:
+        return {'ok': False, 'error': 'Only JPG, PNG, and WebP images are supported for handwritten OCR'}
+
+    content = await report.read()
+    max_size = 5 * 1024 * 1024  # 5MB
+    if len(content) > max_size:
+        return {'ok': False, 'error': 'File size exceeds 5MB limit'}
+
+    # Extract text using GPT-4o Vision
+    extraction_result = extract_handwritten_text(content, report.content_type, language)
+
+    return {
+        'ok': True,
+        'filename': report.filename,
+        'extracted_text': extraction_result.get('extracted_text', ''),
+        'structured_data': extraction_result,
+        'image_preview': f"data:{report.content_type};base64,{base64.b64encode(content).decode('utf-8')}"
+    }
+
+# --- Patient Report Generation (Phase 10) ---
+
+def generate_patient_report(patient_id: str, doctor_id: str, doctor_notes: str, medications: list[dict], diagnosis: str, language: str = 'English') -> dict:
+    """
+    Generate a comprehensive patient report in patient's language using AI.
+    Includes patient info, doctor notes, prescription, and summary.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return {
+            'report_content': 'Report generation unavailable - API not configured',
+            'error': 'OpenAI API not configured'
+        }
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        # Get patient info
+        c = get_db()
+        patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
+        if not patient:
+            return {'error': 'Patient not found'}
+
+        patient_dict = dict(patient)
+        doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (doctor_id,)).fetchone()
+        doctor_dict = dict(doctor) if doctor else {'name': 'Unknown Doctor', 'specialty': 'General Medicine'}
+
+        # Build medications text
+        medications_text = ""
+        if medications:
+            for med in medications:
+                medications_text += f"- {med.get('name', 'Unknown')}: {med.get('dosage', '')} {med.get('frequency', '')} for {med.get('duration', '')}\n"
+
+        system_prompt = f"""You are a medical report generator. Generate a comprehensive patient report in {language}.
+
+CRITICAL RULES:
+1. Write the report in {language} (use patient's preferred language)
+2. Keep medical terminology accurate but use patient-friendly language
+3. Structure the report with clear sections:
+   - Patient Information
+   - Doctor Information
+   - Consultation Summary
+   - Diagnosis
+   - Prescription/Medications
+   - Doctor's Notes
+   - Follow-up Instructions
+4. Be clear, professional, and empathetic
+5. Include all provided information
+6. Add appropriate follow-up instructions based on the diagnosis
+
+Return the complete report as plain text (no markdown formatting)."""
+
+        user_prompt = f"""Generate a patient report with the following information:
+
+PATIENT INFORMATION:
+- Name: {patient_dict.get('name', 'Unknown')}
+- Age: {patient_dict.get('age', 'Unknown')}
+- Sex: {patient_dict.get('sex', 'Unknown')}
+- Patient ID: {patient_id}
+
+DOCTOR INFORMATION:
+- Name: {doctor_dict.get('name', 'Unknown')}
+- Specialty: {doctor_dict.get('specialty', 'General Medicine')}
+- Doctor ID: {doctor_id}
+
+CONSULTATION DETAILS:
+- Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+DIAGNOSIS:
+{diagnosis or 'Not specified'}
+
+PRESCRIPTION/MEDICATIONS:
+{medications_text or 'No medications prescribed'}
+
+DOCTOR'S NOTES:
+{doctor_notes or 'No additional notes'}
+
+Generate a complete report in {language}."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            max_tokens=1500,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt}
+            ]
+        )
+
+        report_content = response.choices[0].message.content.strip()
+
+        return {
+            'report_content': report_content,
+            'language': language,
+            'generated_at': datetime.now().isoformat(),
+            'patient_name': patient_dict.get('name', 'Unknown'),
+            'doctor_name': doctor_dict.get('name', 'Unknown')
+        }
+
+    except Exception as e:
+        print(f"Report generation error: {e}")
+        return {
+            'report_content': 'Report generation failed',
+            'error': str(e)
+        }
+
+@app.post('/doctors/{doctor_id}/patients/{patient_id}/generate-report')
+def generate_report_endpoint(doctor_id: str, patient_id: str, p: GenerateReportIn):
+    """
+    Phase 10.1: Generate patient report in patient's language.
+    Accepts doctor notes, medications, diagnosis and returns formatted report.
+    """
+    result = generate_patient_report(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        doctor_notes=p.doctor_notes,
+        medications=p.medications,
+        diagnosis=p.diagnosis,
+        language=p.language
+    )
+
     return result
 
 if __name__ == '__main__':

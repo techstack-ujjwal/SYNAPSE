@@ -4,7 +4,7 @@ import { ChangeEvent, useState, useEffect, useRef } from 'react'
 import {
   ArrowLeft, ArrowRight, Check, FileText, Languages,
   LogOut, Mic, MicOff, Plus, ScanFace, Send, Upload, Volume2, VolumeX, X,
-  AlertCircle, CheckCircle2, Sparkles, Activity, Users, RefreshCw, Clock
+  AlertCircle, CheckCircle2, Sparkles, Activity, Users, RefreshCw, Clock, Printer
 } from 'lucide-react'
 import { ParameterCard } from '@/components/ui/parameter-card'
 import { ReportComparison } from '@/components/ui/report-comparison'
@@ -58,6 +58,7 @@ export default function Page() {
   const [status, setStatus] = useState('')
   const [token, setToken] = useState('')
   const [queue, setQueue] = useState({ people_ahead: 0, estimated_minutes: 0, priority: 'medium' })
+  const [assignedDoctor, setAssignedDoctor] = useState<any>(null)
   const [summary, setSummary] = useState<any>(null)
   const [listening, setListening] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
@@ -469,7 +470,7 @@ export default function Page() {
     const r = await fetch(`${API}/queue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ patient_id: patientId, priority })
+      body: JSON.stringify({ patient_id: patientId, priority, symptoms })
     }).then(x => x.json()).catch(() => ({
       token: `S-${Date.now()}`,
       priority: 'medium',
@@ -478,6 +479,7 @@ export default function Page() {
 
     setToken(r.token)
     setQueue({ ...queue, priority: r.priority })
+    setAssignedDoctor(r.assigned_doctor || null)
     setStep(4)
   }
 
@@ -605,12 +607,13 @@ export default function Page() {
           )}
 
           {step === 4 && (
-            <Token 
-              token={token} 
-              id={patientId} 
-              queue={queue} 
-              name={form.name} 
-              onBack={() => setStep(3)} 
+            <Token
+              token={token}
+              id={patientId}
+              queue={queue}
+              name={form.name}
+              assignedDoctor={assignedDoctor}
+              onBack={() => setStep(3)}
               onDone={() => setMode('dashboard')}
               tToken={tToken}
               tCommon={tCommon}
@@ -1296,11 +1299,11 @@ function Summary({
   )
 }
 
-function Token({ 
-  token, id, queue, name, onBack, onDone, tToken, tCommon 
-}: { 
-  token: string; id: string; queue: { people_ahead: number; estimated_minutes: number; priority: string }; 
-  name: string; onBack: () => void; onDone: () => void; tToken: any; tCommon: any 
+function Token({
+  token, id, queue, name, assignedDoctor, onBack, onDone, tToken, tCommon
+}: {
+  token: string; id: string; queue: { people_ahead: number; estimated_minutes: number; priority: string };
+  name: string; assignedDoctor: any; onBack: () => void; onDone: () => void; tToken: any; tCommon: any
 }) {
   const payload = JSON.stringify({ patient_id: id, token, name })
   const priorityColor = queue.priority === 'high' ? 'bg-[#e44f2b]' : queue.priority === 'low' ? 'bg-[#236b52]' : 'bg-[#f5cf4a]'
@@ -1333,6 +1336,15 @@ function Token({
           <b className="block text-xl font-black truncate">{id}</b>
         </div>
       </div>
+
+      {/* Phase 11.3: Display assigned doctor */}
+      {assignedDoctor && (
+        <div className="mt-6 border-2 border-[#141414] bg-[#faf8f5] p-4">
+          <p className="label font-black text-xs uppercase text-[#8f8b83]">Assigned Doctor</p>
+          <p className="mt-1 text-lg font-black">{assignedDoctor.name}</p>
+          <p className="text-sm font-semibold text-[#48453e]">{assignedDoctor.specialty}</p>
+        </div>
+      )}
 
       <div className="mt-7 flex flex-wrap items-center gap-8 border-2 border-[#141414] p-5 bg-[#f5f1e8]">
         <div className="p-2 bg-white border-2 border-[#141414]">
@@ -1452,8 +1464,15 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
         </header>
 
         <section className="mx-auto max-w-[1180px] px-5 pb-16 pt-8">
-          <p className="eyebrow">{tDash('eyebrow')}</p>
-          <h1 className="display text-4xl sm:text-5xl font-black">{tDash('title')}</h1>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="eyebrow">{tDash('eyebrow')}</p>
+              <h1 className="display text-4xl sm:text-5xl font-black">{tDash('title')}</h1>
+            </div>
+            <button onClick={() => window.print()} className="no-print flex items-center gap-2 font-black px-4 py-3 border-2 border-[#141414] bg-white shadow-[2px_2px_0_#141414] hover:shadow-none hover:translate-x-0.5 hover:translate-y-0.5 transition-all">
+              <Printer className="size-4" /> Print
+            </button>
+          </div>
 
           {section === 'overview' && (
             <div className="mt-8 space-y-6">

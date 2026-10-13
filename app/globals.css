@@ -5,3 +5,70 @@
 :root{color-scheme:light;--background:#f5f1e8;--foreground:#141414;--border:#141414;--ring:#e44f2b}
 @theme inline{--color-background:var(--background);--color-foreground:var(--foreground);--color-border:var(--border);--color-ring:var(--ring)}
 *{box-sizing:border-box}html,body{margin:0;background:#f5f1e8;color:#141414;font-family:Arial,Helvetica,sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer}.eyebrow{font-size:.68rem;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#e44f2b}.display{margin-top:.6rem;font-size:clamp(2.8rem,6vw,5rem);font-weight:900;line-height:.9;letter-spacing:-.07em}.panel{border:2px solid #141414;background:#fff;padding:1.5rem;box-shadow:6px 6px 0 #141414}.action,.button-primary,.button-secondary{display:flex;align-items:center;justify-content:space-between;gap:.75rem;border:2px solid #141414;padding:.9rem 1rem;font-weight:900}.button-primary{background:#141414;color:#fff}.button-secondary{justify-content:center;background:#fff}.metric{border:2px solid #141414;padding:1rem}.metric span{display:block;font-size:.68rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.metric b{display:block;margin-top:.5rem;font-size:1.8rem}svg{width:1.2em;height:1.2em}.label{font-size:.68rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#8b867c}::selection{background:#f5cf4a;color:#141414}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
+
+/* Phase 12.1: Print styles for patient dashboard and doctor review page */
+@media print {
+  /* Hide navigation, buttons, and interactive elements */
+  aside,
+  nav,
+  button,
+  .no-print {
+    display: none !important;
+  }
+
+  /* Remove shadows and background colors for clean printing */
+  * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  /* Set white background for body */
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Remove panel backgrounds, keep borders */
+  .panel {
+    background: white !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+  }
+
+  /* Ensure content fits on A4 paper */
+  main,
+  section {
+    max-width: 100% !important;
+    padding: 1rem !important;
+  }
+
+  /* Improve text readability */
+  p,
+  span,
+  div {
+    color: black !important;
+  }
+
+  /* Hide metric backgrounds */
+  .metric {
+    background: white !important;
+    border: 1px solid #000 !important;
+  }
+
+  /* Ensure textareas print their content */
+  textarea {
+    border: 1px solid #000 !important;
+    resize: none;
+    overflow: visible;
+  }
+
+  /* Page break control */
+  .panel {
+    page-break-inside: avoid;
+  }
+
+  /* Print headers and footers */
+  @page {
+    margin: 1cm;
+  }
+}
