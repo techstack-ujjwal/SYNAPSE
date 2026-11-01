@@ -28,13 +28,18 @@ export default function DoctorDashboard() {
       }
       setDoctor(docData)
       fetch(`${API}/doctors/${docData.id}/patients`)
-        .then(r => r.json())
+        .then(r => {
+          if (!r.ok) {
+            throw new Error(`HTTP error! status: ${r.status}`)
+          }
+          return r.json()
+        })
         .then(data => {
-          console.log('Patients data:', data)
           setPatients(Array.isArray(data) ? data : [])
         })
         .catch(err => {
           console.error('Error fetching patients:', err)
+          alert('Failed to load patients. Please check if the backend server is running.')
           setPatients([])
         })
         .finally(() => setLoading(false))
@@ -51,9 +56,18 @@ export default function DoctorDashboard() {
   }
 
   const updateStatus = (queueId: number, status: string) => {
-    fetch(`${API}/queue/${queueId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
+    fetch(`${API}/queue/${queueId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(status) })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error('Failed to update status')
+        }
+        return r.json()
+      })
       .then(() => setPatients(p => p.map(x => x.id === queueId ? { ...x, status } : x)))
-      .catch(() => {})
+      .catch(err => {
+        console.error('Error updating status:', err)
+        alert('Failed to update status. Please try again.')
+      })
   }
 
   if (loading) return <div className="min-h-screen bg-[#f5f1e8] flex items-center justify-center"><RefreshCw className="size-8 animate-spin text-[#e44f2b]" /></div>
@@ -87,6 +101,7 @@ export default function DoctorDashboard() {
             <div className="bg-[#f5f1e8] border-2 border-[#141414] p-8 text-center">
               <Users className="size-12 mx-auto text-[#8f8b83] mb-4" />
               <p className="font-black text-lg text-[#8f8b83]">No patients in queue</p>
+              <p className="text-sm font-semibold text-[#8f8b83] mt-2">Patients will appear here when they join the queue</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -117,7 +132,10 @@ export default function DoctorDashboard() {
                         </span>
                       </td>
                       <td className="py-3 px-2">
-                        <button onClick={() => router.push(`/${params.locale}/doctor-dashboard/review/${p.patient_id}`)} className="bg-[#236b52] text-white px-3 py-1 text-xs font-black border-2 border-[#141414] hover:bg-[#1a523d] transition-all mr-2">
+                        <button
+                          onClick={() => router.push(`/${params.locale}/doctor-dashboard/review/${p.patient_id}`)}
+                          className="bg-[#236b52] text-white px-3 py-1 text-xs font-black border-2 border-[#141414] hover:bg-[#1a523d] transition-all mr-2"
+                        >
                           Review
                         </button>
                         {p.status === 'waiting' && (
@@ -129,6 +147,9 @@ export default function DoctorDashboard() {
                           <button onClick={() => updateStatus(p.id, 'completed')} className="bg-[#e44f2b] text-white px-3 py-1 text-xs font-black border-2 border-[#141414] hover:bg-[#c93f1d] transition-all">
                             Complete
                           </button>
+                        )}
+                        {p.status === 'completed' && (
+                          <span className="text-xs font-black text-[#236b52]">Completed</span>
                         )}
                       </td>
                     </tr>

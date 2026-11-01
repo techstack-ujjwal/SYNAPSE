@@ -27,6 +27,19 @@ const blank: Form = { name:'', age:'', phone:'', sex:'', bp:'', sugar:'', weight
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 let MAX_QUESTIONS = 8
 
+// Simple symptom extraction for fallback when AI is unavailable
+const extractSymptoms = (text: string): string[] => {
+  const terms = ['fever', 'cough', 'pain', 'breathlessness', 'headache', 'vomiting', 'cold', 'fatigue', 'rash', 'diarrhea',
+                  'बुखार', 'खांसी', 'दर्द', 'सिरदर्द', 'उल्टी', 'थकान', 'ताप', 'दरद', 'माथो दुखै', 'पेट दुखै']
+  const found: string[] = []
+  for (const term of terms) {
+    if (text.toLowerCase().includes(term.toLowerCase())) {
+      found.push(term)
+    }
+  }
+  return Array.from(new Set(found))
+}
+
 export default function Page() {
   const params = useParams()
   const router = useRouter()
@@ -282,7 +295,8 @@ export default function Page() {
       question: language === 'मारवाड़ी'
         ? 'राम राम सा, थारी बीमारी रा लक्षण और बताओ।'
         : 'Please continue describing what you are feeling.',
-      language
+      language,
+      symptoms: extractSymptoms(text) // Fallback: extract symptoms locally
     }))
 
     setMessages(m => [...m, { from: 'ai', text: r.question }])
@@ -422,6 +436,8 @@ export default function Page() {
         audioRef.current.onerror = () => setIsPlayingAudio(false)
         await audioRef.current.play()
       } else {
+        // Silently fail if TTS is not available (invalid API key, etc.)
+        console.log('TTS audio not available:', result.error || 'No audio data')
         setIsPlayingAudio(false)
       }
     } catch (err) {
@@ -485,22 +501,22 @@ export default function Page() {
 
   if (mode === 'dashboard') {
     return (
-      <Dashboard 
-        patientId={lookup} 
+      <Dashboard
+        patientId={lookup.trim()}
         tDash={tDash}
         onNew={() => {
-          setPatientId(lookup)
+          setPatientId(lookup.trim())
           setMode('register')
           setStep(2)
-          fetch(`${API}/conversation/initial?patient_id=${lookup}&language=${encodeURIComponent(language)}`, {
+          fetch(`${API}/conversation/initial?patient_id=${lookup.trim()}&language=${encodeURIComponent(language)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ patient_id: lookup, language })
+            body: JSON.stringify({ patient_id: lookup.trim(), language })
           })
             .then(x => x.json())
             .then(res => setMessages([{ from: 'ai', text: res.question }]))
             .catch(() => setMessages([{ from: 'ai', text: 'Hello, how can I help you today?' }]))
-        }} 
+        }}
         onLogout={() => setMode('landing')}
       />
     )
@@ -1405,11 +1421,11 @@ function Token({
   )
 }
 
-function Returning({ 
-  lookup, setLookup, onBack, onOpen, tRet, tCommon 
-}: { 
-  lookup: string; setLookup: (x: string) => void; onBack: () => void; onOpen: () => void; 
-  tRet: any; tCommon: any 
+function Returning({
+  lookup, setLookup, onBack, onOpen, tRet, tCommon
+}: {
+  lookup: string; setLookup: (x: string) => void; onBack: () => void; onOpen: () => void;
+  tRet: any; tCommon: any
 }) {
   return (
     <section className="mx-auto max-w-[720px] px-5 pb-20 pt-20">
@@ -1417,14 +1433,21 @@ function Returning({
         <p className="eyebrow">{tRet('eyebrow')}</p>
         <h1 className="display text-4xl sm:text-6xl font-black">{tRet('title')}</h1>
         <p className="mt-5 font-semibold text-[#48453e]">{tRet('description')}</p>
-        <input 
-          value={lookup} 
-          onChange={e => setLookup(e.target.value)} 
-          placeholder="SYN-…" 
-          className="mt-8 w-full border-2 border-[#141414] bg-white px-4 py-4 text-xl font-black outline-none focus:border-[#236b52]" 
+        <input
+          value={lookup}
+          onChange={e => setLookup(e.target.value)}
+          placeholder="Enter Patient ID or Token (e.g., SYN-... or S-...)"
+          className="mt-8 w-full border-2 border-[#141414] bg-white px-4 py-4 text-xl font-black outline-none focus:border-[#236b52]"
         />
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
-          <button onClick={onOpen} className="action bg-[#141414] text-white flex items-center justify-center gap-2 font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#e44f2b]">
+          <button onClick={() => {
+            if (lookup.trim()) {
+              setLookup(lookup.trim())
+              onOpen()
+            } else {
+              alert('Please enter a valid Patient ID or Token')
+            }
+          }} className="action bg-[#141414] text-white flex items-center justify-center gap-2 font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#e44f2b]">
             {tRet('openDashboard')} <ArrowRight className="size-5" />
           </button>
           <button onClick={onBack} className="button-secondary flex items-center justify-center gap-2 font-black py-4 border-2 border-[#141414] bg-white shadow-[4px_4px_0_#141414]">
@@ -1446,16 +1469,42 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
   const [presentReportId, setPresentReportId] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [comparisonLoading, setComparisonLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
   useEffect(() => {
-    fetch(`${API}/patients/${patientId}`).then(r => r.json()).then(setData).catch(() => {})
-    fetch(`${API}/patients/${patientId}/reports`)
-      .then(r => r.json())
-      .then(data => setReports(Array.isArray(data) ? data : []))
-      .catch(() => setReports([]))
-    fetch(`${API}/patients/${patientId}/visits`).then(r => r.json()).then(v => setData(d => ({ ...d, visits: v }))).catch(() => {})
-    fetch(`${API}/patients/${patientId}/prescriptions`).then(r => r.json()).then(p => setData(d => ({ ...d, prescriptions: p }))).catch(() => {})
+    setLoading(true)
+    setError(null)
+
+    // Check if it's a token (starts with S-) or patient ID (starts with SYN-)
+    const isToken = patientId.toUpperCase().startsWith('S-')
+    const patientEndpoint = isToken ? `${API}/patients/by-token/${patientId}` : `${API}/patients/${patientId}`
+
+    fetch(patientEndpoint)
+      .then(r => {
+        if (!r.ok) {
+          throw new Error(isToken ? 'Token not found' : 'Patient not found')
+        }
+        return r.json()
+      })
+      .then(patientData => {
+        setData(patientData)
+        // Get the actual patient_id from the response for other endpoints
+        const actualPatientId = patientData.id || patientId
+
+        // Fetch related data after we have the actual patient ID
+        fetch(`${API}/patients/${actualPatientId}/reports`)
+          .then(r => r.json())
+          .then(data => setReports(Array.isArray(data) ? data : []))
+          .catch(() => setReports([]))
+        fetch(`${API}/patients/${actualPatientId}/visits`).then(r => r.json()).then(v => setData(d => ({ ...d, visits: v }))).catch(() => {})
+        fetch(`${API}/patients/${actualPatientId}/prescriptions`).then(r => r.json()).then(p => setData(d => ({ ...d, prescriptions: p }))).catch(() => {})
+      })
+      .catch(err => {
+        console.error('Error fetching patient:', err)
+        setError(err.message || 'Failed to load patient data')
+      })
+      .finally(() => setLoading(false))
   }, [patientId])
 
   const handleCompare = () => {
@@ -1477,6 +1526,21 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
     { id: 'prescriptions', label: 'Prescriptions', icon: FileText },
     { id: 'visits', label: 'Visit History', icon: FileText }
   ]
+
+  if (loading) return <div className="min-h-screen bg-[#f5f1e8] flex items-center justify-center"><Activity className="size-8 animate-spin text-[#e44f2b]" /></div>
+
+  if (error) return (
+    <main className="min-h-screen bg-[#f5f1e8] flex items-center justify-center">
+      <div className="panel border-2 border-[#141414] bg-white p-8 shadow-[6px_6px_0_#141414] max-w-md text-center">
+        <AlertCircle className="size-12 mx-auto text-[#e44f2b] mb-4" />
+        <h2 className="text-2xl font-black mb-2">Error</h2>
+        <p className="font-semibold text-[#8f8b83] mb-6">{error}</p>
+        <button onClick={onLogout} className="bg-[#236b52] text-white font-black py-3 px-6 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all">
+          Back to Home
+        </button>
+      </div>
+    </main>
+  )
 
   return (
     <main className="min-h-screen bg-[#f5f1e8] flex">
@@ -1550,7 +1614,34 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
                 <div><p className="eyebrow">Lab Reports</p><h2 className="text-2xl font-black">Your Medical Reports</h2></div>
                 {reports.length >= 2 && <button onClick={() => setShowComparison(true)} className="flex items-center gap-2 bg-[#236b52] text-white px-4 py-2 font-black border-2 border-[#141414] shadow-[3px_3px_0_#141414]"><Activity className="size-4" /> Compare</button>}
               </div>
-              {reports.length === 0 ? <div className="bg-[#f5f1e8] border-2 border-[#141414] p-8 text-center"><FileText className="size-12 mx-auto text-[#8f8b83] mb-4" /><p className="font-black text-lg text-[#8f8b83]">No reports</p></div> : <div className="space-y-3">{reports.map(r => <div key={r.id} className="border-2 border-[#141414] bg-[#faf8f5] p-4 flex items-center justify-between"><div className="flex items-center gap-3"><FileText className="size-5 text-[#236b52]" /><div><p className="font-black text-sm">{r.filename}</p><p className="text-xs font-semibold text-[#8f8b83]">{new Date(r.created_at).toLocaleDateString()}</p></div></div><button onClick={() => deleteReport(r.id)} className="text-[#e44f2b] hover:text-black p-2"><X className="size-4" /></button></div>)}</div>}
+              {reports.length === 0 ? (
+                <div className="bg-[#f5f1e8] border-2 border-[#141414] p-8 text-center">
+                  <FileText className="size-12 mx-auto text-[#8f8b83] mb-4" />
+                  <p className="font-black text-lg text-[#8f8b83]">No reports</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {reports.map(r => (
+                    <div key={r.id} className="border-2 border-[#141414] bg-[#faf8f5] p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-3">
+                          <FileText className="size-5 text-[#236b52]" />
+                          <div>
+                            <p className="font-black text-sm">{r.filename}</p>
+                            <p className="text-xs font-semibold text-[#8f8b83]">{new Date(r.created_at).toLocaleDateString()}</p>
+                          </div>
+                        </div>
+                        <button onClick={() => deleteReport(r.id)} className="text-[#e44f2b] hover:text-black p-2"><X className="size-4" /></button>
+                      </div>
+                      {r.key_points && Array.isArray(r.key_points) && r.key_points.length > 0 && (
+                        <div className="mt-2 text-xs font-semibold text-[#48453e]">
+                          {r.key_points.slice(0, 3).map((pt: string, j: number) => <p key={j}>• {pt}</p>)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1558,7 +1649,41 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
             <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
               <p className="eyebrow">Prescriptions</p>
               <h2 className="text-2xl font-black mt-2">Your Prescriptions</h2>
-              {data.prescriptions?.length ? <div className="mt-6 space-y-4">{data.prescriptions.map((p: any, i: number) => <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4"><p className="font-black text-sm">{p.doctor_notes || 'No notes'}</p><div className="mt-2 text-xs font-semibold text-[#8f8b83]">{new Date(p.created_at).toLocaleDateString()}</div></div>)}</div> : <p className="mt-4 font-semibold text-[#8f8b83]">No prescriptions</p>}
+              {data.prescriptions?.length ? (
+                <div className="mt-6 space-y-4">
+                  {data.prescriptions.map((p: any, i: number) => (
+                    <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="font-black text-sm">{new Date(p.created_at).toLocaleDateString()}</p>
+                        {p.doctor_id && <p className="text-xs font-semibold text-[#8f8b83]">Doctor ID: {p.doctor_id}</p>}
+                      </div>
+                      {p.doctor_notes && (
+                        <div className="mb-3">
+                          <p className="text-xs font-black uppercase text-[#8f8b83] mb-1">Doctor's Notes</p>
+                          <p className="text-sm font-semibold">{p.doctor_notes}</p>
+                        </div>
+                      )}
+                      {p.medications && Array.isArray(p.medications) && p.medications.length > 0 && (
+                        <div>
+                          <p className="text-xs font-black uppercase text-[#8f8b83] mb-2">Medications</p>
+                          <div className="space-y-2">
+                            {p.medications.map((med: any, medIndex: number) => (
+                              <div key={medIndex} className="bg-white border-2 border-[#141414] p-3">
+                                <p className="font-black text-sm">{med.name} - {med.dosage}</p>
+                                <p className="text-xs font-semibold text-[#48453e] mt-1">
+                                  {med.type} • {med.frequency} {med.quantity ? `• Qty: ${med.quantity}` : ''}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 font-semibold text-[#8f8b83]">No prescriptions</p>
+              )}
             </div>
           )}
 
@@ -1566,7 +1691,30 @@ function Dashboard({ patientId, onNew, onLogout, tDash }: { patientId: string; o
             <div className="mt-8 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
               <p className="eyebrow">Visit History</p>
               <h2 className="text-2xl font-black mt-2">All Visits</h2>
-              {data.visits?.length ? <div className="mt-6 space-y-4">{data.visits.map((v: any, i: number) => <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4"><p className="font-black text-sm">{new Date(v.created_at).toLocaleDateString()}</p><p className="mt-1 font-semibold text-[#48453e]">{JSON.parse(v.summary)?.chief_complaint || 'No summary'}</p></div>)}</div> : <p className="mt-4 font-semibold text-[#8f8b83]">No visits recorded</p>}
+              {data.visits?.length ? (
+                <div className="mt-6 space-y-4">
+                  {data.visits.map((v: any, i: number) => {
+                    const summary = typeof v.summary === 'string' ? JSON.parse(v.summary) : v.summary
+                    return (
+                      <div key={i} className="border-2 border-[#141414] bg-[#faf8f5] p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="font-black text-sm">{new Date(v.created_at).toLocaleDateString()}</p>
+                          {v.risk && <span className={`text-xs font-black px-2 py-1 ${v.risk === 'high' ? 'bg-[#e44f2b] text-white' : v.risk === 'low' ? 'bg-[#236b52] text-white' : 'bg-[#f5cf4a] text-black'}`}>{v.risk} risk</span>}
+                        </div>
+                        {summary && (
+                          <div>
+                            <p className="font-semibold text-[#48453e]">{summary.chief_complaint || 'No chief complaint'}</p>
+                            {summary.doctor_notes && <p className="mt-1 text-xs font-semibold text-[#8f8b83]">Notes: {summary.doctor_notes}</p>}
+                            {summary.medications_prescribed && <p className="mt-1 text-xs font-semibold text-[#8f8b83]">Medications: {summary.medications_prescribed}</p>}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="mt-4 font-semibold text-[#8f8b83]">No visits recorded</p>
+              )}
             </div>
           )}
 

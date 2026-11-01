@@ -12,6 +12,7 @@ export default function ReviewPatientPage() {
   const [doctor, setDoctor] = useState<any>(null)
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [notes, setNotes] = useState('')
   const [medications, setMedications] = useState<any[]>([])
   const [newMed, setNewMed] = useState({ name: '', type: 'tablet', dosage: '', quantity: '', frequency: 'once daily' })
@@ -25,6 +26,8 @@ export default function ReviewPatientPage() {
   const [showReassignModal, setShowReassignModal] = useState(false)
   const [allDoctors, setAllDoctors] = useState<any[]>([])
   const [selectedDoctor, setSelectedDoctor] = useState('')
+  const [aiSuggestions, setAiSuggestions] = useState<any[]>([])
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
 
   useEffect(() => {
     const doc = localStorage.getItem('doctor')
@@ -32,10 +35,21 @@ export default function ReviewPatientPage() {
     try {
       const docData = typeof doc === 'string' ? JSON.parse(doc) : doc
       setDoctor(docData)
+
       fetch(`${API}/doctors/${docData.id}/patients/${params.patient_id}/review`)
-        .then(r => r.json())
-        .then(setData)
-        .catch(() => {})
+        .then(r => {
+          if (!r.ok) {
+            throw new Error(`HTTP error! status: ${r.status}`)
+          }
+          return r.json()
+        })
+        .then(data => {
+          setData(data)
+        })
+        .catch(err => {
+          console.error('Error fetching patient review:', err)
+          setError('Failed to load patient data. Please try again.')
+        })
         .finally(() => setLoading(false))
     } catch (err) {
       console.error('Error parsing doctor data:', err)
@@ -46,7 +60,9 @@ export default function ReviewPatientPage() {
     fetch(`${API}/doctors`)
       .then(r => r.json())
       .then(setAllDoctors)
-      .catch(() => {})
+      .catch(err => {
+        console.error('Error fetching doctors:', err)
+      })
   }, [router, params.locale, params.patient_id])
 
   const addMedication = () => {
@@ -56,6 +72,42 @@ export default function ReviewPatientPage() {
   }
 
   const removeMedication = (id: number) => setMedications(m => m.filter(x => x.id !== id))
+
+  const addSuggestionToMedications = (suggestion: any) => {
+    setMedications([...medications, { 
+      ...suggestion, 
+      id: Date.now(),
+      quantity: ''
+    }])
+  }
+
+  const fetchAiSuggestions = async () => {
+    if (!data) return
+    
+    setLoadingSuggestions(true)
+    try {
+      // Extract symptoms from visit history
+      const symptoms = data.visits?.[0]?.symptoms || []
+      const symptomsArray = Array.isArray(symptoms) ? symptoms : []
+      
+      const response = await fetch(`${API}/doctors/prescription-suggestions?patient_id=${params.patient_id}&language=English`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symptoms: symptomsArray,
+          diagnosis: diagnosis
+        })
+      })
+      const result = await response.json()
+      if (result.suggestions) {
+        setAiSuggestions(result.suggestions)
+      }
+    } catch (error) {
+      console.error('Failed to fetch AI suggestions:', error)
+    } finally {
+      setLoadingSuggestions(false)
+    }
+  }
 
   const handleHandwrittenUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -149,6 +201,11 @@ export default function ReviewPatientPage() {
     URL.revokeObjectURL(url)
   }
 
+  const downloadPDF = () => {
+    // Print the page - browser will handle PDF generation
+    window.print()
+  }
+
   const handleReassignDoctor = async () => {
     if (!selectedDoctor) return
 
@@ -178,32 +235,129 @@ export default function ReviewPatientPage() {
     }
   }
 
-  const savePrescription = () => {
+  const savePrescription = async () => {
     if (!doctor || !data) return
-    fetch(`${API}/prescriptions`, {
+
+    // Validate that medications exist
+    if (medications.length === 0) {
+      alert('Please add at least one medication before saving the prescription.')
+      return
+    }
+
+    // Create visit summary for the consultation
+    const visitSummary = {
+      chief_complaint: diagnosis || 'Doctor consultation',
+      doctor_notes: notes,
+      medications_count: medications.length,
+      doctor_id: doctor.id
+    }
+
+    // Save prescription with visit information
+    const prescriptionResponse = await fetch(`${API}/prescriptions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         patient_id: params.patient_id,
+        visit_id: null, // Let backend create new visit
         doctor_id: doctor.id,
         doctor_notes: notes,
-        medications,
+        medications: medications,
         language: 'English'
       })
-    }).then(() => alert('Prescription saved')).catch(() => alert('Failed to save'))
+    })
+
+    if (!prescriptionResponse.ok) {
+      const errorData = await prescriptionResponse.json().catch(() => ({}))
+      console.error('Prescription save error:', errorData)
+      alert('Failed to save prescription. Please try again.')
+      return
+    }
+
+    const prescriptionResult = await prescriptionResponse.json()
+    console.log('Prescription saved:', prescriptionResult)
+
+    // Update queue status to completed
+    try {
+      const queueResponse = await fetch(`${API}/queue/complete-by-patient`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient_id: params.patient_id
+        })
+      })
+
+      if (queueResponse.ok) {
+        alert('Prescription saved and consultation completed!')
+        router.push(`/${params.locale}/doctor-dashboard`)
+      } else {
+        const errorData = await queueResponse.json().catch(() => ({}))
+        console.error('Queue complete error:', errorData)
+        alert('Prescription saved but failed to complete consultation')
+      }
+    } catch (error) {
+      console.error('Queue complete error:', error)
+      alert('Prescription saved but failed to complete consultation')
+    }
   }
 
   if (loading) return <div className="min-h-screen bg-[#f5f1e8] flex items-center justify-center"><Activity className="size-8 animate-spin text-[#e44f2b]" /></div>
 
+  if (error) return (
+    <main className="min-h-screen bg-[#f5f1e8] flex items-center justify-center">
+      <div className="panel border-2 border-[#141414] bg-white p-8 shadow-[6px_6px_0_#141414] max-w-md text-center">
+        <AlertCircle className="size-12 mx-auto text-[#e44f2b] mb-4" />
+        <h2 className="text-2xl font-black mb-2">Error Loading Patient</h2>
+        <p className="font-semibold text-[#8f8b83] mb-6">{error}</p>
+        <button
+          onClick={() => router.push(`/${params.locale}/doctor-dashboard`)}
+          className="bg-[#236b52] text-white font-black py-3 px-6 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all"
+        >
+          Back to Dashboard
+        </button>
+      </div>
+    </main>
+  )
+
+  if (!data || !data.patient) return (
+    <main className="min-h-screen bg-[#f5f1e8] flex items-center justify-center">
+      <div className="panel border-2 border-[#141414] bg-white p-8 shadow-[6px_6px_0_#141414] max-w-md text-center">
+        <AlertCircle className="size-12 mx-auto text-[#8f8b83] mb-4" />
+        <h2 className="text-2xl font-black mb-2">Patient Not Found</h2>
+        <p className="font-semibold text-[#8f8b83] mb-6">The patient data could not be loaded.</p>
+        <button
+          onClick={() => router.push(`/${params.locale}/doctor-dashboard`)}
+          className="bg-[#236b52] text-white font-black py-3 px-6 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all"
+        >
+          Back to Dashboard
+        </button>
+      </div>
+    </main>
+  )
+
   return (
     <main className="min-h-screen bg-[#f5f1e8]">
-      <header className="flex items-center justify-between px-5 py-5 lg:px-10 border-b-2 border-[#141414] bg-white">
+      {/* Print-only header */}
+      <div className="print-only hidden print:block border-b-2 border-black pb-4 mb-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-black">Synapse AI</h1>
+            <p className="text-sm">Medical Report</p>
+          </div>
+          <div className="text-right">
+            <p className="font-black">{data?.patient?.name || 'Patient'}</p>
+            <p className="text-sm">Patient ID: {data?.patient?.id}</p>
+            <p className="text-sm">Date: {new Date().toLocaleDateString()}</p>
+          </div>
+        </div>
+      </div>
+
+      <header className="flex items-center justify-between px-5 py-5 lg:px-10 border-b-2 border-[#141414] bg-white no-print">
         <button onClick={() => router.push(`/${params.locale}/doctor-dashboard`)} className="flex items-center gap-2 font-black text-sm text-[#8f8b83] hover:text-[#141414]">
           <ArrowLeft className="size-4" /> Back to Dashboard
         </button>
         <div className="flex items-center gap-4">
-          <button onClick={() => window.print()} className="no-print flex items-center gap-2 font-black text-sm px-4 py-2 border-2 border-[#141414] bg-white shadow-[2px_2px_0_#141414] hover:shadow-none hover:translate-x-0.5 hover:translate-y-0.5 transition-all">
-            <Printer className="size-4" /> Print
+          <button onClick={downloadPDF} className="no-print flex items-center gap-2 font-black text-sm px-4 py-2 border-2 border-[#141414] bg-white shadow-[2px_2px_0_#141414] hover:shadow-none hover:translate-x-0.5 hover:translate-y-0.5 transition-all">
+            <Printer className="size-4" /> Print / PDF
           </button>
           <b className="text-xl font-black">synapse <span className="text-[#e44f2b]">ai</span></b>
         </div>
@@ -280,21 +434,37 @@ export default function ReviewPatientPage() {
 
         {/* Doctor Notes */}
         <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
-          <p className="eyebrow">Doctor Notes</p>
+          <p className="eyebrow no-print">Doctor Notes</p>
           <textarea
             value={notes}
             onChange={e => setNotes(e.target.value)}
             placeholder="Enter your observations and notes..."
             rows={4}
-            className="mt-4 w-full border-2 border-[#141414] bg-white px-4 py-3 font-semibold outline-none focus:border-[#236b52]"
+            className="mt-4 w-full border-2 border-[#141414] bg-white px-4 py-3 font-semibold outline-none focus:border-[#236b52] no-print"
           />
+          {notes && (
+            <div className="mt-4 p-4 border-2 border-[#141414] bg-[#faf8f5]">
+              <p className="font-black text-sm mb-2">Doctor's Notes:</p>
+              <p className="text-sm font-semibold">{notes}</p>
+            </div>
+          )}
         </div>
 
         {/* Prescription Builder */}
         <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
-          <p className="eyebrow">Prescription Builder</p>
+          <div className="flex items-center justify-between no-print">
+            <p className="eyebrow">Prescription Builder</p>
+            <button
+              onClick={fetchAiSuggestions}
+              disabled={loadingSuggestions}
+              className="flex items-center gap-2 text-sm font-black text-[#236b52] hover:text-[#141414] disabled:opacity-50"
+            >
+              {loadingSuggestions ? <Activity className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+              {loadingSuggestions ? 'Generating Suggestions...' : 'Get AI Suggestions'}
+            </button>
+          </div>
           
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 no-print">
             <input value={newMed.name} onChange={e => setNewMed({ ...newMed, name: e.target.value })} placeholder="Medication name" className="border-2 border-[#141414] bg-white px-3 py-2 font-black outline-none focus:border-[#236b52]" />
             <select value={newMed.type} onChange={e => setNewMed({ ...newMed, type: e.target.value })} className="border-2 border-[#141414] bg-white px-3 py-2 font-black outline-none">
               <option value="tablet">Tablet</option>
@@ -309,12 +479,33 @@ export default function ReviewPatientPage() {
             </button>
           </div>
 
+          {aiSuggestions.length > 0 && (
+            <div className="mt-4 space-y-2 no-print">
+              <p className="text-sm font-black text-[#8f8b83]">AI Suggestions (click to add):</p>
+              {aiSuggestions.map((suggestion, i) => (
+                <div key={i} className="flex items-center justify-between border-2 border-[#236b52] bg-[#f0fdf4] p-3">
+                  <div className="text-sm">
+                    <div className="font-black">{suggestion.name} - {suggestion.dosage} ({suggestion.type})</div>
+                    <div className="text-xs font-semibold text-[#8f8b83]">{suggestion.frequency} - {suggestion.reason}</div>
+                  </div>
+                  <button
+                    onClick={() => addSuggestionToMedications(suggestion)}
+                    className="bg-[#236b52] text-white font-black px-3 py-1 text-xs border-2 border-[#141414] hover:bg-[#1a523d]"
+                  >
+                    Add
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {medications.length > 0 && (
             <div className="mt-4 space-y-2">
+              <p className="text-sm font-black text-[#8f8b83]">Prescribed Medications:</p>
               {medications.map((m, i) => (
                 <div key={i} className="flex items-center justify-between border-2 border-[#141414] bg-[#faf8f5] p-3">
                   <div className="text-sm font-black">{m.name} - {m.dosage} ({m.type}) - {m.frequency}</div>
-                  <button onClick={() => removeMedication(m.id)} className="text-[#e44f2b] hover:text-black p-1"><X className="size-4" /></button>
+                  <button onClick={() => removeMedication(m.id)} className="text-[#e44f2b] hover:text-black p-1 no-print"><X className="size-4" /></button>
                 </div>
               ))}
             </div>
@@ -322,7 +513,7 @@ export default function ReviewPatientPage() {
         </div>
 
         {/* Phase 9: Handwritten Report Upload */}
-        <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+        <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414] no-print">
           <p className="eyebrow">Handwritten Prescription/Report Upload</p>
           <p className="mt-2 text-sm font-semibold text-[#8f8b83]">Upload handwritten prescriptions or reports for automatic text extraction</p>
 
@@ -357,19 +548,25 @@ export default function ReviewPatientPage() {
 
         {/* Phase 10: Diagnosis & Report Generation */}
         <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
-          <p className="eyebrow">Diagnosis</p>
+          <p className="eyebrow no-print">Diagnosis</p>
           <textarea
             value={diagnosis}
             onChange={e => setDiagnosis(e.target.value)}
             placeholder="Enter diagnosis or clinical findings..."
             rows={3}
-            className="mt-4 w-full border-2 border-[#141414] bg-white px-4 py-3 font-semibold outline-none focus:border-[#236b52]"
+            className="mt-4 w-full border-2 border-[#141414] bg-white px-4 py-3 font-semibold outline-none focus:border-[#236b52] no-print"
           />
+          {diagnosis && (
+            <div className="mt-4 p-4 border-2 border-[#141414] bg-[#faf8f5]">
+              <p className="font-black text-sm mb-2">Diagnosis:</p>
+              <p className="text-sm font-semibold">{diagnosis}</p>
+            </div>
+          )}
 
           <button
             onClick={generatePatientReport}
             disabled={generatingReport || !notes}
-            className="mt-4 w-full bg-[#236b52] text-white font-black py-3 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="mt-4 w-full bg-[#236b52] text-white font-black py-3 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed no-print"
           >
             {generatingReport ? <Activity className="size-5 animate-spin" /> : <Sparkles className="size-5" />}
             {generatingReport ? 'Generating Report...' : 'Generate Patient Report'}
@@ -377,28 +574,28 @@ export default function ReviewPatientPage() {
 
           {generatedReport && (
             <div className="mt-4">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 no-print">
                 <p className="font-black text-sm">Generated Report</p>
                 <button onClick={downloadReport} className="flex items-center gap-2 text-sm font-black text-[#236b52] hover:text-[#141414]">
                   <Download className="size-4" /> Download
                 </button>
               </div>
-              <textarea
-                value={generatedReport}
-                readOnly
-                rows={15}
-                className="w-full border-2 border-[#141414] bg-[#faf8f5] px-4 py-3 font-semibold outline-none text-sm whitespace-pre-wrap"
-              />
+              <div className="p-4 border-2 border-[#141414] bg-[#faf8f5]">
+                <p className="font-black text-sm mb-2">Patient Report</p>
+                <div className="text-sm font-semibold whitespace-pre-wrap">
+                  {generatedReport}
+                </div>
+              </div>
             </div>
           )}
         </div>
 
-        <button onClick={savePrescription} className="mt-6 w-full bg-[#e44f2b] text-white font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all flex items-center justify-center gap-2">
+        <button onClick={savePrescription} className="mt-6 w-full bg-[#e44f2b] text-white font-black py-4 border-2 border-[#141414] shadow-[4px_4px_0_#141414] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all flex items-center justify-center gap-2 no-print">
           <Save className="size-5" /> Save Prescription
         </button>
 
         {/* Phase 13.2: Doctor Reassignment */}
-        <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414]">
+        <div className="mt-6 panel border-2 border-[#141414] bg-white p-6 shadow-[6px_6px_0_#141414] no-print">
           <p className="eyebrow">Doctor Reassignment</p>
           <p className="mt-2 text-sm font-semibold text-[#8f8b83]">Change the assigned doctor for this patient</p>
           <button

@@ -26,3 +26,7 @@ class GenerateReportIn(BaseModel):
 class ReassignDoctorIn(BaseModel):
     patient_id: str
     new_doctor_id: str
+
+
+class CompleteConsultationIn(BaseModel):
+    patient_id: str

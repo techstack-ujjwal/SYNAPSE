@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 import json, os, re, sqlite3, io, base64
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
@@ -18,6 +18,7 @@ from app.schemas import (
     HandwrittenReportIn,
     GenerateReportIn,
     ReassignDoctorIn,
+    CompleteConsultationIn,
     AudioTranscribeIn,
     TextToSpeechIn,
     QueueIn,
@@ -160,10 +161,11 @@ def get_followup_question(payload: ConversationIn, patient_context: str = ""):
     """Generate dynamic follow-up question using OpenAI in patient's selected language (token-optimized)."""
     key = os.getenv('OPENAI_API_KEY')
     if not key:
+        print("OpenAI follow-up question error: OPENAI_API_KEY not configured")
         return None
 
     try:
-        from openai import OpenAI
+        from openai import OpenAI, AuthenticationError
         client = OpenAI(api_key=key)
 
         # Reduced context window from 8 to 5 messages to save tokens
@@ -202,6 +204,9 @@ def get_followup_question(payload: ConversationIn, patient_context: str = ""):
         )
 
         return response.choices[0].message.content.strip()
+    except AuthenticationError as e:
+        print(f"OpenAI follow-up question error: Invalid API key - {e}")
+        return None
     except Exception as e:
         print(f"OpenAI follow-up question error: {e}")
         return None
@@ -490,6 +495,66 @@ WHISPER_LANG_MAP = {
     'मारवाड़ी': 'hi', 'mwr': 'hi'  # Marwadi uses Devanagari script mapped to Hindi acoustic model
 }
 
+def format_summary_as_text(summary_data: dict) -> str:
+    """
+    Convert summary data object into human-readable text for patients.
+    """
+    lines = []
+    
+    if summary_data.get('chief_complaint'):
+        lines.append(f"Chief Complaint: {summary_data['chief_complaint']}")
+    
+    if summary_data.get('timeline'):
+        lines.append(f"Timeline: {summary_data['timeline']}")
+    
+    if summary_data.get('relevant_vitals'):
+        vitals = summary_data['relevant_vitals']
+        if isinstance(vitals, dict):
+            vitals_lines = []
+            for key, value in vitals.items():
+                if value and value != 'null':
+                    vitals_lines.append(f"{key.replace('_', ' ').title()}: {value}")
+            if vitals_lines:
+                lines.append("Vitals:")
+                lines.extend(f"  - {line}" for line in vitals_lines)
+    
+    if summary_data.get('report_findings'):
+        findings = summary_data['report_findings']
+        if isinstance(findings, dict):
+            findings_lines = []
+            for key, value in findings.items():
+                if value and value != 'null':
+                    findings_lines.append(f"{key.replace('_', ' ').title()}: {value}")
+            if findings_lines:
+                lines.append("Report Findings:")
+                lines.extend(f"  - {line}" for line in findings_lines)
+        elif isinstance(findings, str):
+            lines.append(f"Report Findings: {findings}")
+    
+    if summary_data.get('red_flags'):
+        red_flags = summary_data['red_flags']
+        if isinstance(red_flags, list) and red_flags:
+            lines.append("Red Flags:")
+            lines.extend(f"  - {flag}" for flag in red_flags)
+        elif red_flags:
+            lines.append(f"Red Flags: {red_flags}")
+    
+    if summary_data.get('missing_information'):
+        missing = summary_data['missing_information']
+        if isinstance(missing, list) and missing:
+            lines.append("Missing Information:")
+            lines.extend(f"  - {item}" for item in missing)
+        elif missing:
+            lines.append(f"Missing Information: {missing}")
+    
+    if summary_data.get('recommended_specialty'):
+        lines.append(f"Recommended Specialty: {summary_data['recommended_specialty']}")
+    
+    if summary_data.get('risk'):
+        lines.append(f"Risk Level: {summary_data['risk']}")
+    
+    return '\n'.join(lines) if lines else "No summary available"
+
 def translate_medical_summary(text: str, target_language: str = 'English') -> str:
     """
     Translate medical summary to patient's selected language using AI.
@@ -719,10 +784,11 @@ def text_to_speech(text: str, language: str = 'English', voice: str = 'nova') ->
     """Convert text to speech using OpenAI TTS API with optimized voice selection for Indian languages."""
     key = os.getenv('OPENAI_API_KEY')
     if not key:
+        print("TTS error: OPENAI_API_KEY not configured")
         return None
 
     try:
-        from openai import OpenAI
+        from openai import OpenAI, AuthenticationError
         client = OpenAI(api_key=key)
 
         # Voice selection optimized for Indian languages
@@ -758,6 +824,9 @@ def text_to_speech(text: str, language: str = 'English', voice: str = 'nova') ->
         # Convert to base64
         audio_bytes = response.content
         return base64.b64encode(audio_bytes).decode('utf-8')
+    except AuthenticationError as e:
+        print(f"TTS error: Invalid OpenAI API key - {e}")
+        return None
     except Exception as e:
         print(f"TTS error: {e}")
         return None
@@ -1095,14 +1164,71 @@ def get_patient(patient_id: str):
                 pass
         patient_dict['latest_visit'] = visit_dict
 
-    # Get assigned doctor from queue
-    queue_entry = c.execute("SELECT * FROM queue WHERE patient_id = ? AND status IN ('waiting', 'in_consultation') ORDER BY created_at DESC LIMIT 1", (patient_id,)).fetchone()
+    # Get assigned doctor from queue (include completed status)
+    queue_entry = c.execute("SELECT * FROM queue WHERE patient_id = ? AND status IN ('waiting', 'in_consultation', 'completed') ORDER BY created_at DESC LIMIT 1", (patient_id,)).fetchone()
     if queue_entry:
         queue_dict = dict(queue_entry)
         if queue_dict.get('assigned_doctor_id'):
             doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (queue_dict['assigned_doctor_id'],)).fetchone()
             if doctor:
                 patient_dict['assigned_doctor'] = dict(doctor)
+        patient_dict['queue_status'] = queue_dict.get('status')
+        patient_dict['token'] = queue_dict.get('token')
+
+    # Get recent prescriptions
+    prescriptions = c.execute('SELECT * FROM prescriptions WHERE patient_id = ? ORDER BY created_at DESC LIMIT 5', (patient_id,)).fetchall()
+    prescriptions_list = []
+    for p in prescriptions:
+        p_dict = dict(p)
+        if p_dict.get('medications'):
+            try:
+                p_dict['medications'] = json.loads(p_dict['medications'])
+            except:
+                p_dict['medications'] = []
+        prescriptions_list.append(p_dict)
+    patient_dict['recent_prescriptions'] = prescriptions_list
+
+    return patient_dict
+
+
+@app.get('/patients/by-token/{token}')
+def get_patient_by_token(token: str):
+    """Get patient by token number"""
+    c = get_db()
+    # Find queue entry by token
+    queue_entry = c.execute("SELECT * FROM queue WHERE token = ? ORDER BY created_at DESC LIMIT 1", (token,)).fetchone()
+    if not queue_entry:
+        raise HTTPException(status_code=404, detail='Token not found')
+
+    queue_dict = dict(queue_entry)
+    patient_id = queue_dict.get('patient_id')
+
+    # Get patient data
+    patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
+    if not patient:
+        raise HTTPException(status_code=404, detail='Patient not found')
+
+    patient_dict = dict(patient)
+
+    # Get latest visit
+    latest_visit = c.execute('SELECT * FROM visits WHERE patient_id = ? ORDER BY created_at DESC LIMIT 1', (patient_id,)).fetchone()
+    if latest_visit:
+        visit_dict = dict(latest_visit)
+        if visit_dict.get('summary'):
+            try:
+                visit_dict['summary'] = json.loads(visit_dict['summary'])
+            except:
+                pass
+        patient_dict['latest_visit'] = visit_dict
+
+    # Get assigned doctor
+    if queue_dict.get('assigned_doctor_id'):
+        doctor = c.execute('SELECT * FROM doctors WHERE id = ?', (queue_dict['assigned_doctor_id'],)).fetchone()
+        if doctor:
+            patient_dict['assigned_doctor'] = dict(doctor)
+
+    patient_dict['queue_status'] = queue_dict.get('status')
+    patient_dict['token'] = token
 
     # Get recent prescriptions
     prescriptions = c.execute('SELECT * FROM prescriptions WHERE patient_id = ? ORDER BY created_at DESC LIMIT 5', (patient_id,)).fetchall()
@@ -1404,8 +1530,8 @@ def summary(p: SummaryIn):
     priority = ai_determine_priority(p.form.get('vitals', {}), p.symptoms, conversation_text)
 
     # Generate patient-friendly summary in patient's language (Phase 3)
-    # Send summary as object, not JSON string
-    patient_summary_english = json.dumps(summary_data, indent=2)
+    # Convert summary object to human-readable text before translation
+    patient_summary_english = format_summary_as_text(summary_data)
     patient_summary_translated = translate_medical_summary(patient_summary_english, p.language)
 
     # Save visit record
@@ -1501,8 +1627,11 @@ def add_to_queue(q: QueueIn):
     }
 
 @app.patch('/queue/{queue_id}/status')
-def update_queue_status(queue_id: int, status: Literal['waiting', 'in_consultation', 'completed']):
+def update_queue_status(queue_id: int, status: str = Body(...)):
     c = get_db()
+    valid_statuses = ['waiting', 'in_consultation', 'completed']
+    if status not in valid_statuses:
+        raise HTTPException(status_code=422, detail=f'Invalid status. Must be one of: {valid_statuses}')
     c.execute('UPDATE queue SET status = ? WHERE id = ?', (status, queue_id))
     c.commit()
     return {'ok': True}
@@ -1546,6 +1675,29 @@ def reassign_doctor_by_patient(p: ReassignDoctorIn):
 
     return {'ok': True, 'assigned_doctor': dict(doctor)}
 
+@app.api_route('/queue/complete-by-patient', methods=['POST', 'PATCH'])
+def complete_consultation_by_patient(p: CompleteConsultationIn):
+    """
+    Mark consultation as completed by patient_id.
+    Updates the queue status to 'completed' when doctor finishes diagnosis.
+    """
+    c = get_db()
+
+    # Find active queue entry for patient
+    queue_entry = c.execute(
+        'SELECT id FROM queue WHERE patient_id = ? AND status IN (\'waiting\', \'in_consultation\') ORDER BY created_at DESC LIMIT 1',
+        (p.patient_id,)
+    ).fetchone()
+
+    if not queue_entry:
+        raise HTTPException(status_code=404, detail='No active queue entry found for patient')
+
+    # Update the queue entry status to completed
+    c.execute('UPDATE queue SET status = ? WHERE id = ?', ('completed', queue_entry[0]))
+    c.commit()
+
+    return {'ok': True, 'message': 'Consultation completed successfully'}
+
 @app.get('/patients/{patient_id}/visits')
 def get_patient_visits(patient_id: str):
     c = get_db()
@@ -1579,13 +1731,19 @@ def doctor_login(doctor_id: str = Query(...)):
 @app.get('/doctors/{doctor_id}/patients')
 def get_doctor_patients(doctor_id: str):
     c = get_db()
-    # Get patients in queue assigned to this doctor
+    # Get patients in queue assigned to this doctor (including completed ones)
     queue_patients = c.execute('''
         SELECT q.*, p.name as patient_name, p.age, p.phone
         FROM queue q
         JOIN patients p ON q.patient_id = p.id
-        WHERE q.assigned_doctor_id = ? AND q.status IN ('waiting', 'in_consultation')
-        ORDER BY q.created_at
+        WHERE q.assigned_doctor_id = ? AND q.status IN ('waiting', 'in_consultation', 'completed')
+        ORDER BY
+            CASE q.status
+                WHEN 'waiting' THEN 1
+                WHEN 'in_consultation' THEN 2
+                WHEN 'completed' THEN 3
+            END,
+            q.created_at DESC
     ''', (doctor_id,)).fetchall()
     return [dict(p) for p in queue_patients]
 
@@ -1661,12 +1819,30 @@ def get_patient_review(doctor_id: str, patient_id: str):
 @app.post('/prescriptions')
 def create_prescription(p: PrescriptionIn):
     c = get_db()
+
+    # Create a visit record for this consultation if not provided
+    visit_id = p.visit_id
+    if not visit_id:
+        # Create a new visit record
+        visit_summary = {
+            'chief_complaint': 'Doctor consultation',
+            'doctor_notes': p.doctor_notes,
+            'medications_prescribed': len(p.medications) if p.medications else 0
+        }
+        visit_cur = c.execute('''
+            INSERT INTO visits (patient_id, visit_date, summary, symptoms, risk, priority, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (p.patient_id, datetime.now().isoformat(), json.dumps(visit_summary), json.dumps([]), 'medium', 'medium', datetime.now().isoformat()))
+        c.commit()
+        visit_id = visit_cur.lastrowid
+
+    # Create prescription
     cur = c.execute('''
         INSERT INTO prescriptions (patient_id, visit_id, doctor_id, doctor_notes, medications, created_at, language)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (p.patient_id, p.visit_id, p.doctor_id, p.doctor_notes, json.dumps(p.medications), datetime.now().isoformat(), p.language))
+    ''', (p.patient_id, visit_id, p.doctor_id, p.doctor_notes, json.dumps(p.medications), datetime.now().isoformat(), p.language))
     c.commit()
-    return {'prescription_id': cur.lastrowid, 'ok': True}
+    return {'prescription_id': cur.lastrowid, 'visit_id': visit_id, 'ok': True}
 
 @app.get('/patients/{patient_id}/prescriptions')
 def get_patient_prescriptions(patient_id: str):
@@ -1837,6 +2013,86 @@ async def upload_handwritten_report(report: UploadFile = File(...), patient_id: 
 
 # --- Patient Report Generation (Phase 10) ---
 
+def generate_prescription_suggestions(symptoms: list[str], diagnosis: str = "", patient_age: int = 30, patient_sex: str = 'Male', language: str = 'English') -> dict:
+    """
+    Generate AI-powered prescription suggestions based on symptoms and diagnosis.
+    Returns a list of suggested medications with dosages and frequencies.
+    """
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return {
+            'suggestions': [],
+            'notes': 'AI suggestions unavailable - API not configured'
+        }
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        symptoms_text = ', '.join(symptoms) if symptoms else 'No specific symptoms reported'
+
+        system_prompt = f"""You are a medical prescription assistant. Suggest appropriate medications based on symptoms and diagnosis.
+
+CRITICAL RULES:
+1. Return ONLY a valid JSON array of medication suggestions
+2. Each suggestion must include: name, dosage, frequency, type (tablet/syrup/injection/capsule), and a brief reason
+3. Keep suggestions general and appropriate for the described condition
+4. Consider patient age ({patient_age}) and sex ({patient_sex}) when suggesting dosages
+5. Do NOT prescribe controlled substances or opioids
+6. If symptoms are severe or unclear, suggest consulting a specialist
+7. Provide 3-5 medication suggestions maximum
+8. All output in {language}
+
+Response format:
+[
+  {{
+    "name": "Medication Name",
+    "dosage": "e.g., 500mg",
+    "frequency": "e.g., twice daily",
+    "type": "tablet",
+    "reason": "Brief explanation"
+  }}
+]
+
+Return ONLY the JSON array, no explanations."""
+
+        user_prompt = f"""Generate prescription suggestions for:
+
+SYMPTOMS: {symptoms_text}
+DIAGNOSIS: {diagnosis or 'Not specified'}
+PATIENT AGE: {patient_age}
+PATIENT SEX: {patient_sex}
+
+Suggest appropriate medications in {language}."""
+
+        response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            temperature=0.3,
+            response_format={'type': 'json_object'},
+            max_tokens=500,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt}
+            ]
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        
+        # Ensure result is a list
+        suggestions = result.get('suggestions', []) if isinstance(result, dict) else result if isinstance(result, list) else []
+
+        return {
+            'suggestions': suggestions,
+            'notes': 'AI-generated suggestions - doctor should review and adjust as needed'
+        }
+
+    except Exception as e:
+        print(f"Prescription suggestion error: {e}")
+        return {
+            'suggestions': [],
+            'notes': f'Error generating suggestions: {str(e)}'
+        }
+
 def generate_patient_report(patient_id: str, doctor_id: str, doctor_notes: str, medications: list[dict], diagnosis: str, language: str = 'English') -> dict:
     """
     Generate a comprehensive patient report in patient's language using AI.
@@ -1958,6 +2214,57 @@ def generate_report_endpoint(doctor_id: str, patient_id: str, p: GenerateReportI
     )
 
     return result
+
+@app.api_route('/doctors/prescription-suggestions', methods=['POST'])
+async def get_prescription_suggestions(
+    request: Request,
+    patient_id: str = Query(...),
+    language: str = Query('English')
+):
+    """
+    Generate AI-powered prescription suggestions based on symptoms and diagnosis.
+    Doctors can review and edit these suggestions before finalizing prescriptions.
+    """
+    # Get patient info for age and sex
+    c = get_db()
+    patient = c.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
+    if not patient:
+        raise HTTPException(status_code=404, detail='Patient not found')
+
+    patient_dict = dict(patient)
+    
+    # Try to get symptoms and diagnosis from request body or query params
+    symptoms = []
+    diagnosis = ''
+    
+    try:
+        body = await request.json()
+        symptoms = body.get('symptoms', [])
+        diagnosis = body.get('diagnosis', '')
+    except:
+        # Fallback to query params
+        symptoms_str = request.query_params.get('symptoms', '')
+        if symptoms_str:
+            symptoms = symptoms_str.split(',')
+        diagnosis = request.query_params.get('diagnosis', '')
+    
+    result = generate_prescription_suggestions(
+        symptoms=symptoms,
+        diagnosis=diagnosis,
+        patient_age=patient_dict.get('age', 30),
+        patient_sex=patient_dict.get('sex', 'Male'),
+        language=language
+    )
+
+    return result
+
+@app.get('/extract-symptoms')
+def extract_symptoms_endpoint(text: str = Query(...)):
+    """
+    Simple symptom extraction for fallback when AI is unavailable.
+    Returns a list of symptoms found in the text.
+    """
+    return {'symptoms': extract(text)}
 
 if __name__ == '__main__':
     import uvicorn
