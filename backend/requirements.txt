@@ -2,6 +2,11 @@ fastapi
 uvicorn[standard]
 python-multipart
 pydantic
+pydantic-settings
 openai
 python-dotenv
 pypdf2
+pytest
+pytest-asyncio
+ruff
+mypy

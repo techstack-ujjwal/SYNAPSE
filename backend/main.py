@@ -8,6 +8,22 @@ from typing import Optional, Literal
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 
+# Import schemas from app.schemas
+from app.schemas import (
+    PatientIn,
+    ConversationIn,
+    SummaryIn,
+    PrescriptionIn,
+    ReportComparisonIn,
+    HandwrittenReportIn,
+    GenerateReportIn,
+    ReassignDoctorIn,
+    AudioTranscribeIn,
+    TextToSpeechIn,
+    QueueIn,
+    DoctorIn,
+)
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -22,78 +38,6 @@ BASE_WAIT_TIME = int(os.getenv('BASE_WAIT_TIME', '8'))
 
 app = FastAPI(title='Synapse AI intake API')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
-
-class PatientIn(BaseModel):
-    name: str = Field(min_length=2, max_length=60)
-    age: int = Field(ge=0, le=120)
-    phone: str = Field(pattern=r'^(?:\+91[6-9]\d{9}|[6-9]\d{9})$')
-    sex: str = Field(min_length=1)
-    vitals: dict = {}
-
-class ConversationIn(BaseModel):
-    patient_id: str = ''
-    message: str = Field(min_length=1, max_length=4000)
-    language: str = 'English'
-    history: list[dict] = []
-
-class SummaryIn(BaseModel):
-    patient_id: str = ''
-    form: dict = {}
-    messages: list[dict] = []
-    reports: list[dict] = []
-    symptoms: list[str] = []
-    language: str = 'English'
-    report_data: dict = {}
-
-class AudioTranscribeIn(BaseModel):
-    audio_data: str  # Base64 encoded audio
-    language: str = 'English'
-
-class TextToSpeechIn(BaseModel):
-    text: str
-    language: str = 'English'
-    voice: str = 'nova'  # nova, shimmer, alloy, echo, fable, onyx
-
-class QueueIn(BaseModel):
-    patient_id: str
-    priority: str = 'medium'
-    symptoms: list[str] = []
-
-class DoctorIn(BaseModel):
-    name: str = Field(min_length=2, max_length=60)
-    specialty: str = Field(min_length=2, max_length=50)
-    phone: str = Field(pattern=r'^(?:\+91[6-9]\d{9}|[6-9]\d{9})$')
-    is_active: bool = True
-
-class PrescriptionIn(BaseModel):
-    patient_id: str
-    visit_id: Optional[int] = None
-    doctor_id: str
-    doctor_notes: str = ''
-    medications: list[dict] = []
-    language: str = 'English'
-
-class ReportComparisonIn(BaseModel):
-    patient_id: str
-    past_report_id: int
-    present_report_id: int
-    language: str = 'English'
-
-class HandwrittenReportIn(BaseModel):
-    patient_id: str
-    language: str = 'English'
-
-class GenerateReportIn(BaseModel):
-    patient_id: str
-    doctor_id: str
-    doctor_notes: str = ''
-    medications: list[dict] = []
-    diagnosis: str = ''
-    language: str = 'English'
-
-class ReassignDoctorIn(BaseModel):
-    patient_id: str
-    new_doctor_id: str
 
 def get_db():
     global _global_conn
